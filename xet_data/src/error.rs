@@ -1,4 +1,5 @@
 use std::string::FromUtf8Error;
+use std::sync::Arc;
 use std::sync::mpsc::RecvError;
 
 use thiserror::Error;
@@ -16,6 +17,10 @@ use crate::file_reconstruction::FileReconstructionError;
 
 #[derive(Error, Debug)]
 pub enum DataError {
+    /// A shared upload failure retained by the session after its originating cleaner is dropped.
+    #[error(transparent)]
+    SharedUploadError(Arc<DataError>),
+
     #[error("File query policy configuration error: {0}")]
     FileQueryPolicyError(String),
 

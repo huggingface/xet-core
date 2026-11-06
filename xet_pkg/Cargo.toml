@@ -97,7 +97,9 @@ tokio_with_wasm = { workspace = true, features = ["rt", "sync"] }
 
 [dev-dependencies]
 async-std = { workspace = true }
+ctor = { workspace = true }
 futures = { workspace = true }
+rand = { workspace = true }
 serial_test = { workspace = true }
 smol = { workspace = true }
 tempfile = { workspace = true }

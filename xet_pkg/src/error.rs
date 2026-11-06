@@ -230,6 +230,7 @@ impl XetError {
 
     fn from_data_error_ref(de: &DataError) -> Self {
         match de {
+            DataError::SharedUploadError(error) => XetError::from_data_error_ref(error),
             DataError::AuthError(_) => XetError::Authentication(de.to_string()),
             DataError::ClientError(ce) => XetError::from_client_error_ref(ce),
             DataError::FormatError(fe) => XetError::from_core_error_ref(fe),
@@ -402,6 +403,26 @@ mod tests {
     use xet_core_structures::merklehash::MerkleHash;
 
     use super::*;
+
+    #[test]
+    fn shared_upload_error_preserves_public_and_telemetry_categories() {
+        let errors = [
+            DataError::IOError(std::io::Error::other("disk failed")),
+            DataError::ClientError(client_error_with_status(429)),
+            DataError::ClientError(client_error_with_status(503)),
+            DataError::ClientError(ClientError::AuthError(AuthError::TokenRefreshFailure("bad token".into()))),
+        ];
+        for error in errors {
+            let shared = DataError::SharedUploadError(std::sync::Arc::new(error));
+            let class = xet_data::telemetry::classify_error(&shared);
+            let public = XetError::from(shared);
+            assert_eq!(public.telemetry_class(), class);
+            assert!(matches!(
+                public,
+                XetError::Io(_) | XetError::RateLimited(_) | XetError::ServerError(_) | XetError::Authentication(_)
+            ));
+        }
+    }
 
     #[test]
     fn runtime_cancelled_maps_to_cancelled() {
