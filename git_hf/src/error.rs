@@ -8,7 +8,7 @@ use crate::PointerError;
 
 #[derive(Error, Debug)]
 pub enum GitHfError {
-    #[error("Command failed: {reason}, {source:?}")]
+    #[error("Command failed: {reason}{}", .source.as_ref().map(|e| format!(", {e}")).unwrap_or_default())]
     CommandFailed {
         reason: String,
         source: Option<std::io::Error>,
