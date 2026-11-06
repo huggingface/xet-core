@@ -38,11 +38,11 @@ use xet_runtime::file_utils::SafeFileCreator;
 use super::deletion_controls::{ObjectETag, ObjectTagSet, last_upload_tag_set_now};
 use super::direct_access_client::DirectAccessClient;
 use super::xorb_utils::{self, REFERENCE_INSTANT, duration_to_expiration_secs_ceil};
-use crate::cas_client::Client;
 use crate::cas_client::adaptive_concurrency::AdaptiveConcurrencyController;
 use crate::cas_client::chunk_window_builder::build_file_chunk_hashes_response;
 use crate::cas_client::interface::{ShardUploadProgressCallback, ShardUploadProgressType};
 use crate::cas_client::progress_tracked_streams::ProgressCallback;
+use crate::cas_client::{Client, XorbBlockData};
 use crate::cas_types::{
     BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HexMerkleHash, HttpRange,
     QueryReconstructionResponse, QueryReconstructionResponseV2, ShardUploadEvent, XorbMultiRangeFetch,
@@ -1893,8 +1893,8 @@ impl Client for LocalClient {
         url_info: Box<dyn super::super::interface::URLProvider>,
         _download_permit: super::super::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<ProgressCallback>,
-        uncompressed_size_if_known: Option<usize>,
-    ) -> Result<(Bytes, Vec<u32>)> {
+        output: Arc<XorbBlockData>,
+    ) -> Result<()> {
         // Retry loop: try to fetch, and if URL expired, refresh and retry once.
         for attempt in 0..2 {
             self.apply_api_delay().await;
@@ -1922,43 +1922,24 @@ impl Client for LocalClient {
             // Read each byte range from the serialized file and deserialize the chunks.
             let mut file = File::open(&file_path).map_err(|_| ClientError::XORBNotFound(MerkleHash::default()))?;
 
-            let mut all_decompressed = Vec::new();
-            let mut all_chunk_indices = Vec::<u32>::new();
-            let mut total_transfer = 0u64;
-
+            // Report each range as transferred before appending it: readers of `output` may finish the
+            // reconstruction as soon as the last chunk is appended.
+            let total_transfer: u64 = http_ranges.iter().map(|r| r.length()).sum();
+            let mut completed_transfer = 0u64;
             for http_range in &http_ranges {
                 let len = http_range.length() as usize;
-                total_transfer += http_range.length();
 
                 file.seek(SeekFrom::Start(http_range.start))?;
                 let mut data = vec![0u8; len];
                 std::io::Read::read_exact(&mut file, &mut data)?;
 
-                let (decompressed, chunk_indices) =
-                    xet_core_structures::xorb_object::deserialize_chunks(&mut Cursor::new(&data))?;
-
-                xet_core_structures::xorb_object::append_chunk_segment(
-                    &mut all_decompressed,
-                    &mut all_chunk_indices,
-                    &decompressed,
-                    &chunk_indices,
-                );
+                completed_transfer += http_range.length();
+                if let Some(ref cb) = progress_callback {
+                    cb(http_range.length(), completed_transfer, total_transfer);
+                }
+                output.append_serialized_chunks(&data, &mut 0)?;
             }
-
-            if let Some(expected) = uncompressed_size_if_known {
-                debug_assert_eq!(
-                    all_decompressed.len(),
-                    expected,
-                    "get_file_term_data: expected {} bytes, got {}",
-                    expected,
-                    all_decompressed.len()
-                );
-            }
-
-            if let Some(ref cb) = progress_callback {
-                cb(total_transfer, total_transfer, total_transfer);
-            }
-            return Ok((Bytes::from(all_decompressed), all_chunk_indices));
+            return Ok(());
         }
 
         // Should not reach here, but return error if we do.

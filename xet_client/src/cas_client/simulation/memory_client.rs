@@ -26,6 +26,7 @@ use super::super::Client;
 use super::super::adaptive_concurrency::AdaptiveConcurrencyController;
 use super::super::interface::{ShardUploadProgressCallback, ShardUploadProgressType};
 use super::super::progress_tracked_streams::ProgressCallback;
+use super::super::xorb_block_data::XorbBlockData;
 use super::client_testing_utils::{FileTermReference, RandomFileContents};
 #[cfg(not(target_family = "wasm"))]
 use super::deletion_controls::{ObjectETag, ObjectTagSet, last_upload_tag_set_now};
@@ -1082,8 +1083,8 @@ impl Client for MemoryClient {
         url_info: Box<dyn super::super::interface::URLProvider>,
         _download_permit: super::super::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<ProgressCallback>,
-        uncompressed_size_if_known: Option<usize>,
-    ) -> Result<(Bytes, Vec<u32>)> {
+        output: Arc<XorbBlockData>,
+    ) -> Result<()> {
         self.apply_api_delay().await;
         let (url, http_ranges) = url_info.retrieve_url().await?;
         let (xorb_hash, url_timestamp) = parse_any_fetch_url(&url)?;
@@ -1105,49 +1106,29 @@ impl Client for MemoryClient {
         let xorbs = &state.xorbs;
         let storage = xorbs.get(&xorb_hash).ok_or(ClientError::XORBNotFound(xorb_hash))?;
 
-        // Extract each byte range from the serialized data and deserialize
-        let mut all_decompressed = Vec::new();
-        let mut all_chunk_indices = Vec::<u32>::new();
-        let mut total_transfer = 0u64;
-
+        // Report each range as transferred before appending it: readers of `output` may finish the
+        // reconstruction as soon as the last chunk is appended.
+        let total_transfer: u64 = http_ranges.iter().map(|r| r.length()).sum();
+        let mut completed_transfer = 0u64;
         for http_range in &http_ranges {
             let start = http_range.start as usize;
             let end = http_range.end as usize + 1;
-            total_transfer += http_range.length();
+            completed_transfer += http_range.length();
+            if let Some(ref cb) = progress_callback {
+                cb(http_range.length(), completed_transfer, total_transfer);
+            }
 
-            let (data, chunk_indices) = match storage {
+            match storage {
                 XorbStorage::Materialized { entry, .. } => {
-                    let range_data = &entry.serialized_data[start..end];
-                    xet_core_structures::xorb_object::deserialize_chunks(&mut Cursor::new(range_data))?
+                    output.append_serialized_chunks(&entry.serialized_data[start..end], &mut 0)?;
                 },
                 XorbStorage::Random { xorb, .. } => {
                     let range_data = xorb.get_serialized_range(start as u64, end as u64);
-                    xet_core_structures::xorb_object::deserialize_chunks(&mut Cursor::new(range_data.as_ref()))?
+                    output.append_serialized_chunks(&range_data, &mut 0)?;
                 },
-            };
-
-            xet_core_structures::xorb_object::append_chunk_segment(
-                &mut all_decompressed,
-                &mut all_chunk_indices,
-                &data,
-                &chunk_indices,
-            );
+            }
         }
-
-        if let Some(expected) = uncompressed_size_if_known {
-            debug_assert_eq!(
-                all_decompressed.len(),
-                expected,
-                "get_file_term_data: expected {} bytes, got {}",
-                expected,
-                all_decompressed.len()
-            );
-        }
-
-        if let Some(ref cb) = progress_callback {
-            cb(total_transfer, total_transfer, total_transfer);
-        }
-        Ok((Bytes::from(all_decompressed), all_chunk_indices))
+        Ok(())
     }
 
     async fn get_file_chunk_hashes(

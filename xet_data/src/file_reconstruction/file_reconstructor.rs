@@ -272,7 +272,7 @@ impl FileReconstructor {
     async fn run_impl(
         self,
         mut data_writer: Box<dyn DataWriter>,
-        run_state: &RunState,
+        run_state: &Arc<RunState>,
         _is_streaming: bool,
     ) -> std::result::Result<u64, RunError> {
         let Self {
@@ -401,14 +401,21 @@ impl FileReconstructor {
                     },
                 };
 
-                let data_future = file_term
-                    .get_data_task(
+                // Starting a block's download waits for a download permit; doing it here, in term order, makes
+                // blocks download in file order.
+                let reader = tokio::select! {
+                    biased;
+                    _ = run_state.cancelled() => {
+                        return run_state.check_run_state().map(|_| 0);
+                    }
+                    result = file_term.start_read(
                         ctx.clone(),
                         client.clone(),
                         run_state.progress_updater().cloned(),
                         chunk_cache.clone(),
-                    )
-                    .await?;
+                        run_state.clone(),
+                    ) => result?,
+                };
 
                 #[cfg(debug_assertions)]
                 {
@@ -423,7 +430,7 @@ impl FileReconstructor {
                 );
 
                 data_writer
-                    .set_next_term_data_source(relative_byte_range, Some(buffer_permit), data_future)
+                    .set_next_term_data_source(relative_byte_range, Some(buffer_permit), reader)
                     .await?;
 
                 run_state.record_new_term(term_size);
@@ -525,6 +532,58 @@ mod tests {
         reconstructor.reconstruct_to_writer(writer).await?;
 
         let data = buffer.lock().unwrap().get_ref().clone();
+        Ok(data)
+    }
+
+    fn new_reconstructor(
+        client: &Arc<LocalClient>,
+        file_hash: MerkleHash,
+        byte_range: Option<FileRange>,
+        config: &ReconstructionConfig,
+    ) -> FileReconstructor {
+        let reconstructor =
+            FileReconstructor::new(&XetContext::default().unwrap(), &(client.clone() as Arc<dyn Client>), file_hash)
+                .with_config(config);
+        match byte_range {
+            Some(range) => reconstructor.with_byte_range(range),
+            None => reconstructor,
+        }
+    }
+
+    /// Reconstructs through a `DownloadStream` and returns the concatenated pieces.
+    async fn reconstruct_to_stream_vec(
+        client: &Arc<LocalClient>,
+        file_hash: MerkleHash,
+        byte_range: Option<FileRange>,
+        config: &ReconstructionConfig,
+    ) -> Result<Vec<u8>> {
+        let mut stream = new_reconstructor(client, file_hash, byte_range, config).reconstruct_to_stream();
+        let mut data = Vec::new();
+        while let Some(piece) = stream.next().await? {
+            data.extend_from_slice(&piece);
+        }
+        Ok(data)
+    }
+
+    /// Reconstructs through an `UnorderedDownloadStream` and assembles the pieces by offset, checking that they
+    /// cover the output exactly once.
+    async fn reconstruct_to_unordered_stream_vec(
+        client: &Arc<LocalClient>,
+        file_hash: MerkleHash,
+        byte_range: Option<FileRange>,
+        config: &ReconstructionConfig,
+    ) -> Result<Vec<u8>> {
+        let mut stream = new_reconstructor(client, file_hash, byte_range, config).reconstruct_to_unordered_stream();
+        let mut pieces = Vec::new();
+        while let Some(piece) = stream.next().await? {
+            pieces.push(piece);
+        }
+        pieces.sort_by_key(|(offset, _)| *offset);
+        let mut data = Vec::new();
+        for (offset, piece) in pieces {
+            assert_eq!(offset, data.len() as u64, "unordered pieces must tile the output");
+            data.extend_from_slice(&piece);
+        }
         Ok(data)
     }
 
@@ -652,6 +711,14 @@ mod tests {
             let file_specific_result = reconstruct_to_file_at_specific_offset(client, h, None, &config).await.unwrap();
             assert_eq!(file_specific_result, *expected, "file_at_specific_offset failed (vectored={use_vectored})");
         }
+
+        // Test 5: ordered and unordered streams
+        let stream_result = reconstruct_to_stream_vec(client, h, None, &base_config).await.unwrap();
+        assert_eq!(stream_result, *expected, "stream failed");
+        let unordered_result = reconstruct_to_unordered_stream_vec(client, h, None, &base_config)
+            .await
+            .unwrap();
+        assert_eq!(unordered_result, *expected, "unordered stream failed");
     }
 
     /// Reconstructs and verifies a byte range using all output methods and vectored/non-vectored writes.
@@ -687,6 +754,15 @@ mod tests {
                     .expect("reconstruct_to_file_at_offset_zero should succeed");
             assert_eq!(file_offset_result, expected, "file_at_offset failed (vectored={use_vectored})");
         }
+
+        // Test 4: ordered and unordered streams
+        let h = file_contents.file_hash;
+        let stream_result = reconstruct_to_stream_vec(client, h, Some(range), &base_config).await.unwrap();
+        assert_eq!(stream_result, expected, "stream failed");
+        let unordered_result = reconstruct_to_unordered_stream_vec(client, h, Some(range), &base_config)
+            .await
+            .unwrap();
+        assert_eq!(unordered_result, expected, "unordered stream failed");
     }
 
     // ==================== Full File Reconstruction Tests ====================
@@ -1022,6 +1098,21 @@ mod tests {
     async fn test_overlapping_chunk_ranges() {
         let (client, file_contents) = setup_test_file(&[(1, (0, 5)), (1, (1, 3)), (1, (2, 4))]).await;
         reconstruct_and_verify_full(&client, &file_contents, test_config()).await;
+    }
+
+    #[tokio::test]
+    async fn test_overlapping_terms_without_exact_cover() {
+        // Terms [0,3) and [2,5) of one xorb share a block whose exact size the terms can't give.
+        let (client, file_contents) = setup_test_file(&[(1, (0, 3)), (1, (2, 5)), (1, (1, 4))]).await;
+        reconstruct_and_verify_full(&client, &file_contents, ReconstructionConfig::default()).await;
+        let file_len = file_contents.data.len() as u64;
+        reconstruct_and_verify_range(
+            &client,
+            &file_contents,
+            FileRange::new(file_len / 3 + 7, file_len - 11),
+            ReconstructionConfig::default(),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -2032,4 +2123,384 @@ mod tests {
             }
         }
     } // mod server_tests
+
+    /// Streams deliver each block's bytes as they are decompressed, not after the whole block has downloaded.
+    mod streaming_tests {
+        use bytes::Bytes;
+        use tokio::sync::watch;
+        use xet_client::cas_client::adaptive_concurrency::ConnectionPermit;
+        use xet_client::cas_client::{
+            BlockByteRange, ProgressCallback, ReadAmount, ShardUploadProgressCallback, URLProvider, XorbBlockData,
+        };
+        use xet_client::cas_types::{
+            BatchQueryReconstructionResponse, FileChunkHashesResponse, QueryReconstructionResponseV2,
+        };
+        use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
+        use xet_core_structures::xorb_object::SerializedXorbObject;
+
+        use super::*;
+
+        /// How `GatedClient` delivers a block.
+        #[derive(Clone, Copy)]
+        enum TermDataBehavior {
+            /// Appends the first chunk, waits until the test opens the gate, then appends the rest.
+            GateAfterFirstChunk,
+            /// Appends the first chunk, then fails the download.
+            FailAfterFirstChunk,
+            /// Delivers the block as the inner client does, but each transfer progress report takes a while.
+            DelayProgressReports,
+            /// Allows one download at a time: a download permit is granted only once the previous block has
+            /// finished downloading. Records each block's first bytes, in download order, in `downloads`.
+            OneDownloadAtATime,
+        }
+
+        /// Wraps a `LocalClient`, changing how blocks are delivered; see `TermDataBehavior`.
+        struct GatedClient {
+            inner: Arc<LocalClient>,
+            gate: watch::Receiver<bool>,
+            behavior: TermDataBehavior,
+            /// Download slots for `OneDownloadAtATime`.
+            download_slots: Arc<tokio::sync::Semaphore>,
+            /// The first bytes of each downloaded block, in download order (`OneDownloadAtATime` only).
+            downloads: Arc<std::sync::Mutex<Vec<Bytes>>>,
+        }
+
+        impl GatedClient {
+            fn new(inner: Arc<LocalClient>, gate: watch::Receiver<bool>, behavior: TermDataBehavior) -> Self {
+                Self {
+                    inner,
+                    gate,
+                    behavior,
+                    download_slots: Arc::new(tokio::sync::Semaphore::new(1)),
+                    downloads: Arc::new(std::sync::Mutex::new(Vec::new())),
+                }
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl Client for GatedClient {
+            async fn get_file_reconstruction_info(
+                &self,
+                file_hash: &MerkleHash,
+            ) -> xet_client::error::Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
+                self.inner.get_file_reconstruction_info(file_hash).await
+            }
+
+            async fn get_reconstruction(
+                &self,
+                file_id: &MerkleHash,
+                bytes_range: Option<FileRange>,
+            ) -> xet_client::error::Result<Option<QueryReconstructionResponseV2>> {
+                self.inner.get_reconstruction(file_id, bytes_range).await
+            }
+
+            async fn batch_get_reconstruction(
+                &self,
+                file_ids: &[MerkleHash],
+            ) -> xet_client::error::Result<BatchQueryReconstructionResponse> {
+                self.inner.batch_get_reconstruction(file_ids).await
+            }
+
+            async fn acquire_download_permit(&self) -> xet_client::error::Result<ConnectionPermit> {
+                if let TermDataBehavior::OneDownloadAtATime = self.behavior {
+                    // Returned by `get_file_term_data` once the download is done.
+                    self.download_slots.acquire().await.unwrap().forget();
+                }
+                self.inner.acquire_download_permit().await
+            }
+
+            async fn get_file_term_data(
+                &self,
+                url_info: Box<dyn URLProvider>,
+                download_permit: ConnectionPermit,
+                progress_callback: Option<ProgressCallback>,
+                output: Arc<XorbBlockData>,
+            ) -> xet_client::error::Result<()> {
+                if let TermDataBehavior::DelayProgressReports = self.behavior {
+                    // A report made after the last chunk is appended would land after the reconstruction
+                    // completes, failing its progress check.
+                    let delayed: Option<ProgressCallback> = progress_callback.map(|cb| {
+                        Arc::new(move |delta: u64, completed: u64, total: u64| {
+                            std::thread::sleep(Duration::from_millis(100));
+                            cb(delta, completed, total);
+                        }) as ProgressCallback
+                    });
+                    return self.inner.get_file_term_data(url_info, download_permit, delayed, output).await;
+                }
+
+                if let TermDataBehavior::OneDownloadAtATime = self.behavior {
+                    let result = self
+                        .inner
+                        .get_file_term_data(url_info, download_permit, progress_callback, output.clone())
+                        .await;
+                    let first_bytes = BlockByteRange {
+                        first_chunk: 0,
+                        offset_into_first_chunk: 0,
+                        len: 16,
+                    };
+                    let prefix = output.try_read(&first_bytes, 0, ReadAmount::All).unwrap().unwrap();
+                    self.downloads.lock().unwrap().push(prefix);
+                    self.download_slots.add_permits(1);
+                    return result;
+                }
+
+                let full = Arc::new(XorbBlockData::with_size_bound(output.capacity()));
+                self.inner
+                    .get_file_term_data(url_info, download_permit, progress_callback, full.clone())
+                    .await?;
+                full.finish()?;
+                let (data, offsets) = full.contents().unwrap();
+
+                let first_end = offsets[1];
+                output.append_chunks(&data[..first_end as usize], &[0, first_end])?;
+
+                match self.behavior {
+                    TermDataBehavior::GateAfterFirstChunk => {
+                        let _ = self.gate.clone().wait_for(|open| *open).await;
+                    },
+                    TermDataBehavior::FailAfterFirstChunk => {
+                        return Err(xet_client::ClientError::Other("simulated failure after first chunk".into()));
+                    },
+                    TermDataBehavior::DelayProgressReports | TermDataBehavior::OneDownloadAtATime => {
+                        unreachable!("handled above")
+                    },
+                }
+
+                let rest: Vec<u32> = offsets[1..].iter().map(|o| o - first_end).collect();
+                output.append_chunks(&data[first_end as usize..], &rest)
+            }
+
+            async fn query_for_global_dedup_shard(
+                &self,
+                prefix: &str,
+                chunk_hash: &MerkleHash,
+            ) -> xet_client::error::Result<Option<Bytes>> {
+                self.inner.query_for_global_dedup_shard(prefix, chunk_hash).await
+            }
+
+            async fn acquire_upload_permit(&self) -> xet_client::error::Result<ConnectionPermit> {
+                self.inner.acquire_upload_permit().await
+            }
+
+            async fn upload_shard(
+                &self,
+                shard_data: Bytes,
+                upload_permit: ConnectionPermit,
+                progress_callback: Option<ShardUploadProgressCallback>,
+            ) -> xet_client::error::Result<Option<MerkleHash>> {
+                self.inner.upload_shard(shard_data, upload_permit, progress_callback).await
+            }
+
+            async fn upload_xorb(
+                &self,
+                prefix: &str,
+                serialized_xorb_object: SerializedXorbObject,
+                progress_callback: Option<ProgressCallback>,
+                upload_permit: ConnectionPermit,
+            ) -> xet_client::error::Result<u64> {
+                self.inner
+                    .upload_xorb(prefix, serialized_xorb_object, progress_callback, upload_permit)
+                    .await
+            }
+
+            async fn get_file_chunk_hashes(
+                &self,
+                file_id: &MerkleHash,
+                dirty_ranges: Vec<FileRange>,
+            ) -> xet_client::error::Result<FileChunkHashesResponse> {
+                self.inner.get_file_chunk_hashes(file_id, dirty_ranges).await
+            }
+        }
+
+        /// One term covering 40 chunks of a single xorb, so the whole file is one block. Reconstructs the bytes
+        /// from `trim.0` to `trim.1` before the end, if given. Returns the gated reconstructor, the gate, and the
+        /// file contents.
+        async fn gated_single_block_file(
+            behavior: TermDataBehavior,
+            trim: Option<(u64, u64)>,
+        ) -> (FileReconstructor, watch::Sender<bool>, RandomFileContents) {
+            let (client, file_contents) = setup_test_file(&[(1, (0, 40))]).await;
+            let (gate_tx, gate_rx) = watch::channel(false);
+            let gated: Arc<dyn Client> = Arc::new(GatedClient::new(client, gate_rx, behavior));
+            let mut reconstructor =
+                FileReconstructor::new(&XetContext::default().unwrap(), &gated, file_contents.file_hash);
+            if let Some((start, end_trim)) = trim {
+                let len = file_contents.data.len() as u64;
+                reconstructor = reconstructor.with_byte_range(FileRange::new(start, len - end_trim));
+            }
+            (reconstructor, gate_tx, file_contents)
+        }
+
+        const FIRST_BYTES_TIMEOUT: Duration = Duration::from_secs(10);
+
+        #[tokio::test]
+        async fn test_stream_yields_first_chunk_before_block_completes() {
+            let (reconstructor, gate, file_contents) =
+                gated_single_block_file(TermDataBehavior::GateAfterFirstChunk, None).await;
+            let mut stream = reconstructor.reconstruct_to_stream();
+
+            // The rest of the block is held back until the stream has returned its first bytes.
+            let first = tokio::time::timeout(FIRST_BYTES_TIMEOUT, stream.next())
+                .await
+                .expect("the first chunk must be streamed before the rest of its block downloads")
+                .unwrap()
+                .unwrap();
+            assert!(!first.is_empty() && first.len() < file_contents.data.len());
+            assert_eq!(first, file_contents.data[..first.len()]);
+
+            gate.send(true).unwrap();
+            let mut data = first.to_vec();
+            while let Some(piece) = stream.next().await.unwrap() {
+                data.extend_from_slice(&piece);
+            }
+            assert_eq!(data, file_contents.data);
+        }
+
+        #[tokio::test]
+        async fn test_blocking_stream_yields_first_chunk_before_block_completes() {
+            let (reconstructor, gate, file_contents) =
+                gated_single_block_file(TermDataBehavior::GateAfterFirstChunk, None).await;
+            let mut stream = reconstructor.reconstruct_to_stream();
+
+            let reader = tokio::task::spawn_blocking(move || {
+                let first = stream.blocking_next().unwrap().unwrap();
+                gate.send(true).unwrap();
+                let mut data = first.to_vec();
+                while let Some(piece) = stream.blocking_next().unwrap() {
+                    data.extend_from_slice(&piece);
+                }
+                (first.len(), data)
+            });
+            let (first_len, data) = tokio::time::timeout(FIRST_BYTES_TIMEOUT, reader)
+                .await
+                .expect("the first chunk must be streamed before the rest of its block downloads")
+                .unwrap();
+            assert!(first_len < file_contents.data.len());
+            assert_eq!(data, file_contents.data);
+        }
+
+        #[tokio::test]
+        async fn test_unordered_stream_yields_first_chunk_before_block_completes() {
+            let (reconstructor, gate, file_contents) =
+                gated_single_block_file(TermDataBehavior::GateAfterFirstChunk, None).await;
+            let mut stream = reconstructor.reconstruct_to_unordered_stream();
+
+            let (offset, first) = tokio::time::timeout(FIRST_BYTES_TIMEOUT, stream.next())
+                .await
+                .expect("the first chunk must be streamed before the rest of its block downloads")
+                .unwrap()
+                .unwrap();
+            assert_eq!(offset, 0);
+            assert!(first.len() < file_contents.data.len());
+
+            gate.send(true).unwrap();
+            let mut data = first.to_vec();
+            while let Some((offset, piece)) = stream.next().await.unwrap() {
+                assert_eq!(offset, data.len() as u64);
+                data.extend_from_slice(&piece);
+            }
+            assert_eq!(data, file_contents.data);
+        }
+
+        #[tokio::test]
+        async fn test_stream_range_starting_mid_chunk() {
+            // Start 50 bytes into the first chunk and end 30 bytes before the file does.
+            let (reconstructor, gate, file_contents) =
+                gated_single_block_file(TermDataBehavior::GateAfterFirstChunk, Some((50, 30))).await;
+            let range = FileRange::new(50, file_contents.data.len() as u64 - 30);
+            let mut stream = reconstructor.reconstruct_to_stream();
+            let first = tokio::time::timeout(FIRST_BYTES_TIMEOUT, stream.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(first, file_contents.data[50..50 + first.len()]);
+
+            gate.send(true).unwrap();
+            let mut data = first.to_vec();
+            while let Some(piece) = stream.next().await.unwrap() {
+                data.extend_from_slice(&piece);
+            }
+            assert_eq!(data, file_contents.data[range.start as usize..range.end as usize]);
+        }
+
+        #[tokio::test]
+        async fn test_stream_error_after_partial_block() {
+            let (reconstructor, _gate, file_contents) =
+                gated_single_block_file(TermDataBehavior::FailAfterFirstChunk, None).await;
+            let mut stream = reconstructor.reconstruct_to_stream();
+
+            // Bytes already delivered stay delivered; the failure surfaces on a later read.
+            let mut received = Vec::new();
+            let err = loop {
+                match tokio::time::timeout(FIRST_BYTES_TIMEOUT, stream.next()).await.unwrap() {
+                    Ok(Some(piece)) => received.extend_from_slice(&piece),
+                    Ok(None) => panic!("stream must fail, not end"),
+                    Err(err) => break err,
+                }
+            };
+            assert!(matches!(err, FileReconstructionError::ClientError(_)), "{err:?}");
+            assert!(received.len() < file_contents.data.len());
+            assert_eq!(received, file_contents.data[..received.len()]);
+        }
+
+        // Multi-threaded, so the reconstruction can complete while a delayed progress report is pending.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn test_transfer_progress_complete_when_writing_finishes() {
+            // Writing to a file asserts (in debug builds) that all transfer bytes were reported by the time the
+            // last byte is written; a client reporting progress after appending a block's last chunk fails it.
+            let (reconstructor, _gate, file_contents) =
+                gated_single_block_file(TermDataBehavior::DelayProgressReports, None).await;
+            let temp_dir = tempfile::tempdir().unwrap();
+            let path = temp_dir.path().join("out.bin");
+            let written = reconstructor.reconstruct_to_file(&path, None, true).await.unwrap();
+            assert_eq!(written, file_contents.data.len() as u64);
+            assert_eq!(std::fs::read(&path).unwrap(), file_contents.data);
+        }
+
+        // Multi-threaded, where the runtime runs spawned tasks in no particular order.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn test_blocks_download_in_file_order() {
+            // Eight blocks, one per xorb, in file order.
+            let term_spec: Vec<(u64, (u64, u64))> = (1..=8).map(|xorb| (xorb, (0, 4))).collect();
+            let (client, file_contents) = setup_test_file(&term_spec).await;
+            let (_gate_tx, gate_rx) = watch::channel(false);
+            let gated = Arc::new(GatedClient::new(client, gate_rx, TermDataBehavior::OneDownloadAtATime));
+            let downloads = gated.downloads.clone();
+
+            let gated: Arc<dyn Client> = gated;
+            let mut stream = FileReconstructor::new(&XetContext::default().unwrap(), &gated, file_contents.file_hash)
+                .reconstruct_to_stream();
+            let mut data = Vec::new();
+            while let Some(piece) = tokio::time::timeout(FIRST_BYTES_TIMEOUT, stream.next()).await.unwrap().unwrap() {
+                data.extend_from_slice(&piece);
+            }
+            assert_eq!(data, file_contents.data);
+
+            // The last block is recorded after its data is appended, so the stream can end first.
+            tokio::time::timeout(FIRST_BYTES_TIMEOUT, async {
+                while downloads.lock().unwrap().len() < 8 {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+
+            // Each block's first bytes locate it in the file; blocks must have downloaded front to back.
+            let offsets: Vec<usize> = downloads
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|prefix| {
+                    file_contents
+                        .data
+                        .windows(prefix.len())
+                        .position(|window| window == prefix.as_ref())
+                        .unwrap()
+                })
+                .collect();
+            assert_eq!(offsets.len(), 8);
+            assert!(offsets.windows(2).all(|w| w[0] < w[1]), "blocks downloaded out of file order: {offsets:?}");
+        }
+    } // mod streaming_tests
 }

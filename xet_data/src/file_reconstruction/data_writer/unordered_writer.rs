@@ -9,13 +9,15 @@ use tokio_with_wasm::alias as tokio;
 use xet_client::cas_types::FileRange;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;
 
-use super::super::data_writer::{DataFuture, DataWriter};
+use super::super::data_writer::DataWriter;
+use super::super::reconstruction_terms::TermReader;
 use super::super::run_state::RunState;
 use super::super::{FileReconstructionError, Result};
 
-/// A completed term ready for consumption. Contains the byte range indicating
-/// where this data belongs in the output file, the actual data bytes, and an
-/// optional semaphore permit for backpressure control.
+/// Ready data of a term for consumption: the byte range indicating where this
+/// data belongs in the output file, the data bytes, and an optional semaphore
+/// permit for backpressure control. A term is delivered as one or more of these,
+/// as its xorb block downloads.
 pub(crate) struct CompletedTerm {
     pub byte_range: FileRange,
     pub data: Bytes,
@@ -43,8 +45,8 @@ impl UnorderedWriterProgress {
 /// Writer that delivers completed data terms in arbitrary order.
 ///
 /// Each call to [`set_next_term_data_source`](DataWriter::set_next_term_data_source)
-/// spawns a task (tracked via a [`JoinSet`]) that resolves the data future and
-/// sends the result through an [`mpsc`](tokio::sync::mpsc) channel. The consumer
+/// spawns a task (tracked via a [`JoinSet`]) that reads the term's bytes as they
+/// become ready and sends each piece through an [`mpsc`](tokio::sync::mpsc) channel. The consumer
 /// (typically an [`UnorderedDownloadStream`](super::unordered_download_stream::UnorderedDownloadStream))
 /// reads from the receiver end and gets items in whatever order tasks complete.
 ///
@@ -76,7 +78,7 @@ impl DataWriter for UnorderedWriter {
         &mut self,
         byte_range: FileRange,
         permit: Option<AdjustableSemaphorePermit>,
-        data_future: DataFuture,
+        mut reader: TermReader,
     ) -> Result<()> {
         self.run_state.check_error()?;
 
@@ -90,6 +92,14 @@ impl DataWriter for UnorderedWriter {
         }
 
         let expected_size = byte_range.end - byte_range.start;
+        if reader.len() != expected_size {
+            return Err(FileReconstructionError::InternalWriterError(format!(
+                "Data size mismatch: expected {} bytes, got {} bytes",
+                expected_size,
+                reader.len()
+            )));
+        }
+
         self.progress.terms_in_progress.fetch_add(1, Ordering::Relaxed);
         self.progress.bytes_in_progress.fetch_add(expected_size, Ordering::Relaxed);
 
@@ -98,44 +108,55 @@ impl DataWriter for UnorderedWriter {
         let progress = self.progress.clone();
 
         self.task_set.spawn(async move {
-            let result = async {
+            let mut permit = permit;
+            let mut bytes_sent = 0u64;
+
+            let result: Result<()> = async {
                 run_state.check_error()?;
 
-                let data = data_future.await?;
+                while let Some(data) = reader.read_next().await? {
+                    let len = data.len() as u64;
+                    let start = byte_range.start + bytes_sent;
+                    bytes_sent += len;
 
-                if data.len() as u64 != expected_size {
-                    return Err(FileReconstructionError::InternalWriterError(format!(
-                        "Data size mismatch: expected {} bytes, got {} bytes",
-                        expected_size,
-                        data.len()
-                    )));
+                    // Each piece carries its share of the term's buffer permit; the last carries the rest.
+                    let piece_permit = if reader.is_finished() {
+                        permit.take()
+                    } else {
+                        permit.as_mut().and_then(|p| p.split(len))
+                    };
+                    progress.bytes_in_progress.fetch_sub(len, Ordering::Relaxed);
+
+                    let piece = CompletedTerm {
+                        byte_range: FileRange::new(start, start + len),
+                        data,
+                        permit: piece_permit,
+                    };
+                    if result_tx.send(Ok(piece)).is_err() {
+                        // The consumer is gone; the reconstruction is being torn down.
+                        break;
+                    }
                 }
-
-                Ok(CompletedTerm {
-                    byte_range,
-                    data,
-                    permit,
-                })
+                Ok(())
             }
             .await;
 
-            if let Err(ref e) = result {
-                run_state.set_error(e.clone());
-            }
-
-            let completed_bytes = result.as_ref().map(|t| t.data.len() as u64).unwrap_or(0);
-
-            let _ = result_tx.send(result);
-
-            progress.bytes_in_progress.fetch_sub(expected_size, Ordering::Relaxed);
+            progress
+                .bytes_in_progress
+                .fetch_sub(expected_size - bytes_sent, Ordering::Relaxed);
             progress.terms_in_progress.fetch_sub(1, Ordering::Release);
 
-            if completed_bytes > 0 {
-                Ok(completed_bytes)
-            } else {
+            if let Err(e) = result {
                 run_state.check_error()?;
-                Ok(0)
+                // A cancelled reconstruction fails its block downloads; that is not an error of this term.
+                if run_state.is_cancelled() {
+                    return Ok(bytes_sent);
+                }
+                run_state.set_error(e.clone());
+                let _ = result_tx.send(Err(e.clone()));
+                return Err(e);
             }
+            Ok(bytes_sent)
         });
 
         Ok(())
@@ -192,17 +213,15 @@ mod tests {
 
     use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
+    use super::super::super::reconstruction_terms::test_utils::{delayed_reader, failing_reader, ready_reader};
     use super::*;
 
-    fn immediate_future(data: Bytes) -> DataFuture {
-        Box::pin(async move { Ok(data) })
+    fn immediate_future(data: Bytes) -> TermReader {
+        ready_reader(data)
     }
 
-    fn delayed_future(data: Bytes, delay: Duration) -> DataFuture {
-        Box::pin(async move {
-            tokio::time::sleep(delay).await;
-            Ok(data)
-        })
+    fn delayed_future(data: Bytes, delay: Duration) -> TermReader {
+        delayed_reader(data, delay)
     }
 
     /// Drains all results from the receiver, returning data sorted by offset.
@@ -284,17 +303,13 @@ mod tests {
         let run_state = RunState::new_for_test();
         let (mut writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
 
-        writer
+        let result = writer
             .set_next_term_data_source(FileRange::new(0, 10), None, immediate_future(Bytes::from("Hello")))
-            .await
-            .unwrap();
-
-        let result = writer.finish().await;
-        assert!(result.is_err());
-
-        let result = rx.recv().await.unwrap();
-        assert!(result.is_err());
+            .await;
         assert!(matches!(result, Err(FileReconstructionError::InternalWriterError(_))));
+
+        writer.finish().await.unwrap();
+        assert!(rx.recv().await.is_none());
     }
 
     #[tokio::test]
@@ -302,8 +317,7 @@ mod tests {
         let run_state = RunState::new_for_test();
         let (mut writer, mut rx, _progress) = UnorderedWriter::new_streaming(run_state);
 
-        let failing_future: DataFuture =
-            Box::pin(async { Err(FileReconstructionError::InternalError("Simulated error".to_string())) });
+        let failing_future = failing_reader(5, "Simulated error");
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, failing_future)
@@ -400,8 +414,7 @@ mod tests {
         let run_state = RunState::new_for_test();
         let (mut writer, mut _rx, _progress) = UnorderedWriter::new_streaming(run_state.clone());
 
-        let failing_future: DataFuture =
-            Box::pin(async { Err(FileReconstructionError::InternalError("fail".to_string())) });
+        let failing_future = failing_reader(5, "fail");
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, failing_future)
