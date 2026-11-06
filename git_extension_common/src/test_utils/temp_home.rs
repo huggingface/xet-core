@@ -20,7 +20,8 @@ const GIT_ENV_OVERRIDES: &[&str] = &[
 ];
 
 /// Temporary home with isolated Git configuration and repository discovery.
-/// Inherited Git overrides and system configuration are disabled before any Git setup runs.
+/// Inherited Git overrides are removed and system configuration is disabled before any Git setup runs. Explicit
+/// `git config --system` commands use `system.gitconfig` inside the temporary home instead of the host's file.
 /// Environment settings are restored when the last clone is dropped. Tests must serialize process
 /// environment changes with `#[serial(env_var_write_read)]`; `Rc` alone does not provide isolation.
 #[derive(Clone)]
@@ -38,6 +39,8 @@ impl TempHome {
         let home_env_guard = EnvVarGuard::set("HOME", abs_home_dir.as_os_str());
         let mut git_env_guards: Vec<_> = GIT_ENV_OVERRIDES.iter().map(|name| EnvVarGuard::unset(name)).collect();
         git_env_guards.push(EnvVarGuard::set("GIT_CONFIG_NOSYSTEM", "1"));
+        // GIT_CONFIG_NOSYSTEM only skips implicit reads; explicit --system commands still use GIT_CONFIG_SYSTEM.
+        git_env_guards.push(EnvVarGuard::set("GIT_CONFIG_SYSTEM", abs_home_dir.join("system.gitconfig")));
 
         Ok(Self {
             _env_guard: home_env_guard.into(),
@@ -82,6 +85,7 @@ mod tests {
             .map(|name| EnvVarGuard::set(name, "inherited"))
             .collect();
         inherited.push(EnvVarGuard::set("GIT_CONFIG_NOSYSTEM", "0"));
+        inherited.push(EnvVarGuard::set("GIT_CONFIG_SYSTEM", "inherited"));
         let original_home = env::var_os("HOME");
         let home = TempHome::new()?;
         let path = home.path().to_owned();
@@ -92,6 +96,7 @@ mod tests {
             assert!(env::var_os(name).is_none(), "{name}");
         }
         assert_eq!(env::var("GIT_CONFIG_NOSYSTEM")?, "1");
+        assert_eq!(env::var_os("GIT_CONFIG_SYSTEM"), Some(path.join("system.gitconfig").into_os_string()));
         assert!(path.exists());
         drop(clone);
         assert_eq!(env::var_os("HOME"), original_home);
@@ -99,6 +104,7 @@ mod tests {
             assert_eq!(env::var(name)?, "inherited", "{name}");
         }
         assert_eq!(env::var("GIT_CONFIG_NOSYSTEM")?, "0");
+        assert_eq!(env::var("GIT_CONFIG_SYSTEM")?, "inherited");
         assert!(!path.exists());
         Ok(())
     }

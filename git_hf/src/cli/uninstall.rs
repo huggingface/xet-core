@@ -1,7 +1,8 @@
 use git_extension_common::process_wrapping::{check_command_output, run_git_captured_with_input_and_output};
 
-use super::install::ConfigLocation;
+use super::install::{ConfigLocation, PROCESS_KEY, REQUIRED_KEY};
 use crate::Result;
+use crate::utils::{git_get_all_config_values, is_inside_repository};
 
 // Remove git-hf registration from the system Git config.
 pub(super) fn system() -> Result<()> {
@@ -19,22 +20,34 @@ pub(super) fn local() -> Result<()> {
 }
 
 // Remove git-hf registration from all Git config locations. Every scope is attempted even if an earlier one fails,
-// and the first error is returned.
+// and the first error is returned. The local scope is skipped outside a repository.
 pub(super) fn all() -> Result<()> {
     let system = system();
     let global = global();
-    let local = local();
+    let local = if is_inside_repository(&std::env::current_dir()?)? {
+        local()
+    } else {
+        Ok(())
+    };
     system.and(global).and(local)
 }
 
-// Remove the entire filter.hf section. Git exits with 128 when there is nothing to remove: the section doesn't
-// exist, or --local is used outside a repository. Any other failure, such as a locked or unwritable config file
-// (exit 255), is reported.
+// Remove the entire filter.hf section when git-hf is registered in this scope. Git locks the config file before
+// looking for the section, so removing from a file the user can't write (such as /etc/gitconfig for non-root
+// users) fails even when there is nothing to remove. Reading takes no lock, so check for a registration first.
 fn uninstall_impl(location: ConfigLocation) -> Result<()> {
     let wd = std::env::current_dir()?;
-    let output =
-        run_git_captured_with_input_and_output(&wd, "config", [location.profile(), "--remove-section", "filter.hf"])?
-            .wait_with_status()?;
+    let loc_profile = location.profile();
+    if git_get_all_config_values(&wd, loc_profile, PROCESS_KEY)?.is_empty()
+        && git_get_all_config_values(&wd, loc_profile, REQUIRED_KEY)?.is_empty()
+    {
+        return Ok(());
+    }
+
+    // Exit 128 means the section no longer exists, for example because a concurrent uninstall removed it. Any other
+    // failure, such as a locked or unwritable config file (exit 255), is reported.
+    let output = run_git_captured_with_input_and_output(&wd, "config", [loc_profile, "--remove-section", "filter.hf"])?
+        .wait_with_status()?;
     if output.status.code() == Some(128) {
         return Ok(());
     }
@@ -157,7 +170,16 @@ mod tests {
         let _cwd = CwdGuard::set(home.path())?;
         let set_mode = |mode| fs::set_permissions(&system_dir, fs::Permissions::from_mode(mode));
 
-        // The lock failure is reported, the registration stays, and --all still removes the global registration.
+        // Without a registration, the unwritable system config isn't touched, so --all succeeds.
+        install::global()?;
+        set_mode(0o555)?;
+        system()?;
+        all()?;
+        assert!(git_get_all_config_values(home.path(), "--global", PROCESS_KEY)?.is_empty());
+
+        // With a registration, the lock failure is reported, the registration stays, and --all still removes the
+        // global registration.
+        set_mode(0o755)?;
         run_git_captured(home.path(), "config", ["--system", PROCESS_KEY, PROCESS])?;
         install::global()?;
         set_mode(0o555)?;
@@ -177,7 +199,7 @@ mod tests {
         let home = TempHome::new()?;
         let _ceiling = EnvVarGuard::set("GIT_CEILING_DIRECTORIES", home.path());
         let _cwd = CwdGuard::set(home.path())?;
-        local()?;
+        assert!(local().is_err());
         install::global()?;
         all()?;
         assert!(git_get_all_config_values(home.path(), "--global", PROCESS_KEY)?.is_empty());

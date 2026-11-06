@@ -27,9 +27,10 @@ left untouched; Git's usual configuration precedence still applies.
 including modified values. Use `--system` or `--local` to select another scope,
 or `--all` to attempt removal from system, global, and current repository config.
 `--local` uses the repository Git selects for the current directory, as
-`git config --local` does. Nothing to remove (Git exits with 128 for a missing section,
-or for `--local` outside a repository) is not an error. Other failures, such as a locked
-or unwritable config file, are reported. `--all` still attempts every scope and returns the first error.
+`git config --local` does. A scope without `filter.hf.process` or `filter.hf.required`
+is skipped without being written, so `--all` works for non-root users whose system config
+isn't writable; `--all` also skips the local scope outside a repository. Other failures,
+such as a locked or unwritable config file that has a registration, are reported. `--all` still attempts every scope and returns the first error.
 
 Neither command modifies attributes, hooks, `core.hooksPath`, or diff/merge
 configuration. Hook installation belongs with the pre-push implementation.

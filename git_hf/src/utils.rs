@@ -21,6 +21,12 @@ pub(crate) fn git_get_all_config_values(wd: &Path, loc_profile: &str, key: &str)
         .collect())
 }
 
+/// Whether Git selects a repository for this directory, following the same rules as `git config --local`.
+pub(crate) fn is_inside_repository(wd: &Path) -> Result<bool> {
+    let output = run_git_captured_with_input_and_output(wd, "rev-parse", ["--git-dir"])?.wait_with_status()?;
+    Ok(output.status.success())
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
