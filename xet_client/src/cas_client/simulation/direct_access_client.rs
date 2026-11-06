@@ -14,9 +14,10 @@ use xet_core_structures::xorb_object::XorbObject;
 
 use super::super::interface::Client;
 use crate::cas_types::{
-    FileRange, QueryReconstructionResponse, QueryReconstructionResponseV2, XorbReconstructionFetchInfo,
+    ChunkLayoutResponse, ChunkRange, FileRange, QueryReconstructionResponse, QueryReconstructionResponseV2,
+    TermChunkLayout, XorbReconstructionFetchInfo,
 };
-use crate::error::Result;
+use crate::error::{ClientError, Result};
 
 /// A Client with direct access to XORB and file storage.
 ///
@@ -131,4 +132,44 @@ pub trait DirectAccessClient: Client + Send + Sync {
         hash: MerkleHash,
         fetch_term: XorbReconstructionFetchInfo,
     ) -> Result<(Bytes, Vec<u32>)>;
+}
+
+/// `Client::get_chunk_layout` from the client's own V2 reconstruction and xorb footers.
+pub(crate) async fn chunk_layout_from_footers<C: DirectAccessClient + ?Sized>(
+    client: &C,
+    file_id: &MerkleHash,
+    bytes_range: FileRange,
+    serialized: bool,
+) -> Result<Option<ChunkLayoutResponse>> {
+    let Some(plan) = client.get_reconstruction_v2(file_id, Some(bytes_range)).await? else {
+        return Ok(None);
+    };
+    let mut terms = Vec::with_capacity(plan.terms.len());
+    for term in plan.terms {
+        let footer = client.xorb_footer(&term.hash.into()).await?;
+        let sizes = |offsets: &[u32]| chunk_sizes(offsets, term.range).ok_or(ClientError::InvalidRange);
+        terms.push(TermChunkLayout {
+            hash: term.hash,
+            range: term.range,
+            uncompressed: sizes(&footer.info.unpacked_chunk_offsets)?,
+            serialized: if serialized {
+                Some(sizes(&footer.info.chunk_boundary_offsets)?)
+            } else {
+                None
+            },
+        });
+    }
+    Ok(Some(ChunkLayoutResponse {
+        offset_into_first_range: plan.offset_into_first_range,
+        terms,
+    }))
+}
+
+/// Size of each chunk of `range`, from the cumulative chunk offsets of a xorb footer.
+fn chunk_sizes(offsets: &[u32], range: ChunkRange) -> Option<Vec<u32>> {
+    let (start, end) = (range.start as usize, range.end as usize);
+    let ends = offsets.get(start..end)?;
+    let first_start = if start == 0 { 0 } else { offsets[start - 1] };
+    let starts = std::iter::once(first_start).chain(ends.iter().copied());
+    ends.iter().zip(starts).map(|(&end, start)| end.checked_sub(start)).collect()
 }
