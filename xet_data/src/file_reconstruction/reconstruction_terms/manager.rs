@@ -53,6 +53,7 @@ impl ReconstructionTermManager {
         file_hash: MerkleHash,
         file_byte_range: FileRange,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
+        is_streaming: bool,
     ) -> Result<Self> {
         let completion_rate_estimator =
             ExpWeightedMovingAvg::new_count_decay(config.completion_rate_estimator_half_life);
@@ -80,9 +81,16 @@ impl ReconstructionTermManager {
         // once the first block is finished, we have a second block to start processing -- and
         // an estimate of the completion time based on the first one.  This helps us to get
         // a better estimate of the completion time.
-        let initial_fetch_size = s.config.min_reconstruction_fetch_size.as_u64();
-        s.prefetch_block(initial_fetch_size).await?;
-        s.prefetch_block(2 * initial_fetch_size).await?;
+        //
+        // Only the first block of a stream is smaller, see `stream_initial_fetch_size`.
+        let min_fetch_size = s.config.min_reconstruction_fetch_size.as_u64();
+        let first_fetch_size = if is_streaming {
+            s.config.stream_initial_fetch_size.as_u64().min(min_fetch_size)
+        } else {
+            min_fetch_size
+        };
+        s.prefetch_block(first_fetch_size).await?;
+        s.prefetch_block(2 * min_fetch_size).await?;
 
         debug!(
             %file_hash,
@@ -237,10 +245,8 @@ impl ReconstructionTermManager {
     }
 
     async fn prefetch_block(&mut self, block_size: u64) -> Result<()> {
-        let block_size = block_size.clamp(
-            self.config.min_reconstruction_fetch_size.as_u64(),
-            self.config.max_reconstruction_fetch_size.as_u64(),
-        );
+        // `block_size` can be below `min_reconstruction_fetch_size` for the first block of a stream.
+        let block_size = block_size.min(self.config.max_reconstruction_fetch_size.as_u64());
 
         // First, check the block range to see if we're over the requested range.
         let mut prefetch_block_range =
