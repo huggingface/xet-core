@@ -6,6 +6,7 @@ use xet_runtime::config::XetConfig;
 
 use crate::py_download_stream_group::{PyXetDownloadStreamGroup, build_download_stream_group};
 use crate::py_file_download_group::{PyXetFileDownloadGroup, build_file_download_group};
+use crate::py_range_upload_commit::{PyXetRangeUploadCommit, build_range_upload_commit};
 use crate::py_upload_commit::{PyXetUploadCommit, build_upload_commit};
 use crate::utils::{task_state_display, task_state_to_pystate};
 use crate::{PyXetTaskState, convert_xet_error};
@@ -258,6 +259,71 @@ impl PyXetSession {
             token_refresh_url,
             token_refresh_headers,
             custom_headers,
+        )
+    }
+
+    /// Create a :class:`XetRangeUploadCommit` for editing an existing file by uploading
+    /// only changed byte ranges.
+    ///
+    /// A range upload (also called a "dirty upload") edits an existing file by uploading
+    /// only the changed byte ranges.  The untouched regions are pulled from the original
+    /// file in CAS.
+    ///
+    /// Configure the commit with any combination of:
+    /// - ``endpoint`` — CAS server URL
+    /// - ``token`` — CAS token
+    /// - ``token_expiry_unix_secs`` — Token expiry as Unix timestamp (seconds)
+    /// - ``token_refresh_url`` — URL to refresh the token
+    /// - ``token_refresh_headers`` — Headers for the token refresh request
+    /// - ``custom_headers`` — Extra HTTP headers forwarded with every CAS request
+    /// - ``progress_callback`` — Python callable invoked periodically with progress info
+    /// - ``progress_interval_ms`` — Callback interval in milliseconds
+    ///
+    /// Then call :meth:`XetRangeUploadCommit.edit`, :meth:`XetRangeUploadCommit.insert`,
+    /// :meth:`XetRangeUploadCommit.delete`, or :meth:`XetRangeUploadCommit.append` to queue
+    /// edits.  Feed data incrementally with :meth:`XetRangeUploadEdit.write`.  Call
+    /// :meth:`XetRangeUploadEdit.finish` to finalise the edit before committing, or
+    /// call :meth:`XetRangeUploadCommit.commit` directly — it will finalise all
+    /// pending edits automatically.
+    #[pyo3(signature = (
+        original_hash,
+        original_size,
+        endpoint = None,
+        token = None,
+        token_expiry_unix_secs = None,
+        token_refresh_url = None,
+        token_refresh_headers = None,
+        custom_headers = None,
+        progress_callback = None,
+        progress_interval_ms = 100,
+    ))]
+    pub fn new_range_upload(
+        &self,
+        py: Python<'_>,
+        original_hash: String,
+        original_size: u64,
+        endpoint: Option<String>,
+        token: Option<String>,
+        token_expiry_unix_secs: Option<u64>,
+        token_refresh_url: Option<String>,
+        token_refresh_headers: Option<HashMap<String, String>>,
+        custom_headers: Option<HashMap<String, String>>,
+        progress_callback: Option<Py<PyAny>>,
+        progress_interval_ms: u64,
+    ) -> PyResult<PyXetRangeUploadCommit> {
+        build_range_upload_commit(
+            py,
+            &self.inner,
+            original_hash,
+            original_size,
+            endpoint,
+            token,
+            token_expiry_unix_secs,
+            token_refresh_url,
+            token_refresh_headers,
+            custom_headers,
+            progress_callback,
+            progress_interval_ms,
         )
     }
 
