@@ -58,7 +58,7 @@ impl GitCredentialHelper {
     /// With [`Interaction::Never`], every prompt path is disabled: an empty `GIT_ASKPASS` stops Git
     /// from running `core.askPass` or `SSH_ASKPASS`, `GIT_TERMINAL_PROMPT=0` stops terminal prompts,
     /// and `GCM_INTERACTIVE=never` stops Git Credential Manager's UI. Only a stored credential is
-    /// returned; a helper that does not answer within 2 seconds is killed. With
+    /// returned; a helper that does not answer within `NON_INTERACTIVE_TIMEOUT` is killed. With
     /// [`Interaction::Allowed`], Git may prompt.
     #[allow(clippy::new_ret_no_self)]
     pub fn new(

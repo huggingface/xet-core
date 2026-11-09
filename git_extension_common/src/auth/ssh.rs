@@ -13,7 +13,7 @@ use super::Interaction;
 use crate::errors::{GitExtensionError, Result};
 use crate::git_repo::GitRepo;
 use crate::git_url::GitUrl;
-use crate::utils::process_wrapping::run_program_captured_with_input_and_output;
+use crate::utils::process_wrapping::{check_command_output, run_program_captured_with_input_and_output};
 use crate::utils::ssh_connect::{SSHMetadata, get_sshcmd_and_args};
 
 #[derive(Deserialize, Serialize)]
@@ -32,6 +32,11 @@ pub struct GitLFSAuthenticateResponse {
     pub expires_in: u32,
 }
 
+/// How long a non-interactive lookup waits for `git-lfs-authenticate` before giving up. `ConnectTimeout` in batch
+/// mode bounds only the connection and key exchange; this also bounds a stalled remote command or a key waiting for
+/// agent confirmation or a hardware touch.
+const NON_INTERACTIVE_TIMEOUT: Duration = Duration::from_secs(5);
+
 // This credential helper calls a remote command `git-lfs-authenticate` over an SSH channel
 // to the remote Git server.
 //
@@ -43,13 +48,24 @@ pub struct SSHCredentialHelper {
     repo: GitRepo,
     operation: Operation,
     interaction: Interaction,
-    cached: Mutex<Option<(String, Instant)>>,
+    cached: Mutex<Option<CachedAuthorization>>,
+}
+
+enum CachedAuthorization {
+    Valid {
+        authorization: String,
+        expires_at: Instant,
+    },
+    /// A non-interactive lookup failed; later requests go without credentials instead of waiting on SSH again.
+    Unavailable,
 }
 
 impl SSHCredentialHelper {
     /// With [`Interaction::Never`], SSH runs in batch mode, so it never prompts for a passphrase or
-    /// host key, and a failed authentication sends the request without credentials instead of failing
-    /// it. The server then treats it as anonymous, which suffices for public repositories.
+    /// host key, and is killed if it does not answer within `NON_INTERACTIVE_TIMEOUT`. A failed
+    /// authentication sends the request without credentials instead of failing it, and so do all later
+    /// requests through this helper. The server then treats them as anonymous, which suffices for
+    /// public repositories.
     pub fn new(remote_url: &GitUrl, repo: &GitRepo, operation: Operation, interaction: Interaction) -> Arc<Self> {
         Arc::new(Self {
             remote_url: remote_url.clone(),
@@ -60,21 +76,36 @@ impl SSHCredentialHelper {
         })
     }
 
-    fn authorization(&self) -> Result<String> {
+    /// Returns the authorization header value, or `Ok(None)` if a non-interactive lookup failed and the
+    /// request should go without credentials.
+    fn authorization(&self) -> Result<Option<String>> {
         // Held across the SSH call so concurrent requests reuse one result. No await happens under it.
         let mut cached = self
             .cached
             .lock()
             .map_err(|_| GitExtensionError::internal("SSH cache lock poisoned"))?;
-        if let Some((authorization, expires_at)) = cached.as_ref()
-            && Instant::now() < *expires_at
-        {
-            return Ok(authorization.clone());
+        match cached.as_ref() {
+            Some(CachedAuthorization::Valid {
+                authorization,
+                expires_at,
+            }) if Instant::now() < *expires_at => return Ok(Some(authorization.clone())),
+            Some(CachedAuthorization::Unavailable) => return Ok(None),
+            _ => {},
         }
-        let response = self.authenticate()?;
-        let expires_at = Instant::now() + Duration::from_secs(response.expires_in.into());
-        *cached = Some((response.header.authorization.clone(), expires_at));
-        Ok(response.header.authorization)
+        let response = match self.authenticate() {
+            Ok(response) => response,
+            Err(error) if matches!(self.interaction, Interaction::Never) => {
+                debug!(%error, "SSH authentication unavailable; sending requests without credentials");
+                *cached = Some(CachedAuthorization::Unavailable);
+                return Ok(None);
+            },
+            Err(error) => return Err(error),
+        };
+        *cached = Some(CachedAuthorization::Valid {
+            authorization: response.header.authorization.clone(),
+            expires_at: Instant::now() + Duration::from_secs(response.expires_in.into()),
+        });
+        Ok(Some(response.header.authorization))
     }
 
     fn authenticate(&self) -> Result<GitLFSAuthenticateResponse> {
@@ -93,8 +124,18 @@ impl SSHCredentialHelper {
         // git_xet/tests/test_ssh.rs for details.
         let (program, args) = get_sshcmd_and_args(&meta, &self.repo)?;
 
-        let (output, _err) =
-            run_program_captured_with_input_and_output(program, self.repo.git_path()?, args)?.wait_with_output()?;
+        let command = run_program_captured_with_input_and_output(program, self.repo.git_path()?, args)?;
+        let (output, _err) = match self.interaction {
+            Interaction::Allowed => command.wait_with_output()?,
+            Interaction::Never => {
+                let output = command.wait_with_status_timeout(NON_INTERACTIVE_TIMEOUT)?.ok_or_else(|| {
+                    GitExtensionError::internal(format!(
+                        "git-lfs-authenticate did not answer within {NON_INTERACTIVE_TIMEOUT:?}"
+                    ))
+                })?;
+                check_command_output(output)?
+            },
+        };
 
         let response: GitLFSAuthenticateResponse =
             serde_json::from_slice(&output).map_err(GitExtensionError::internal)?;
@@ -106,13 +147,9 @@ impl SSHCredentialHelper {
 #[async_trait]
 impl CredentialHelper for SSHCredentialHelper {
     async fn fill_credential(&self, req: RequestBuilder) -> std::result::Result<RequestBuilder, ClientError> {
-        match self.authorization() {
-            Ok(authorization) => Ok(req.header(header::AUTHORIZATION, authorization)),
-            Err(error) if matches!(self.interaction, Interaction::Never) => {
-                debug!(%error, "SSH authentication unavailable; sending the request without credentials");
-                Ok(req)
-            },
-            Err(error) => Err(ClientError::credential_helper_error(error)),
+        match self.authorization().map_err(ClientError::credential_helper_error)? {
+            Some(authorization) => Ok(req.header(header::AUTHORIZATION, authorization)),
+            None => Ok(req),
         }
     }
 
@@ -133,7 +170,7 @@ mod tests {
     use crate::test_utils::TestRepo;
 
     // A fake `GIT_SSH` program: records its arguments, then answers like `git-lfs-authenticate`
-    // with the `expires_in` in `<dir>/expires`, or fails if that file holds `fail`.
+    // with the `expires_in` in `<dir>/expires`, fails if that file holds `fail`, or hangs if it holds `hang`.
     #[cfg(unix)]
     fn fake_ssh(dir: &std::path::Path) -> anyhow::Result<xet_runtime::utils::EnvVarGuard> {
         use std::os::unix::fs::PermissionsExt;
@@ -143,7 +180,7 @@ mod tests {
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\necho \"$@\" >> '{d}/calls'\nexpires=$(cat '{d}/expires')\n[ \"$expires\" = fail ] && exit 1\n\
+                "#!/bin/sh\necho \"$@\" >> '{d}/calls'\nexpires=$(cat '{d}/expires')\n[ \"$expires\" = fail ] && exit 1\n[ \"$expires\" = hang ] && exec sleep 30\n\
                  printf '{{\"header\":{{\"Authorization\":\"Basic abc\"}},\"href\":\"h\",\"expires_in\":%s}}' \"$expires\"\n"
             ),
         )?;
@@ -172,7 +209,7 @@ mod tests {
         std::fs::write(dir.join("expires"), "3480")?;
         let helper = SSHCredentialHelper::new(&url, &repo, Operation::Download, Interaction::Never);
         for _ in 0..3 {
-            assert_eq!(helper.authorization()?, "Basic abc");
+            assert_eq!(helper.authorization()?.as_deref(), Some("Basic abc"));
         }
         assert_eq!(calls(), 1);
         assert!(std::fs::read_to_string(dir.join("calls"))?.contains("BatchMode=yes"));
@@ -191,14 +228,47 @@ mod tests {
                 .contains("BatchMode")
         );
 
-        // Without SSH access, batch mode sends no credentials; interactive mode fails.
+        // Without SSH access, batch mode sends no credentials, and doesn't retry SSH for later requests; interactive
+        // mode fails.
         std::fs::write(dir.join("expires"), "fail")?;
         let client = reqwest_middleware::ClientWithMiddleware::from(reqwest::Client::new());
         let never = SSHCredentialHelper::new(&url, &repo, Operation::Download, Interaction::Never);
-        let request = never.fill_credential(client.get("http://localhost/")).await?.build()?;
-        assert!(request.headers().get(reqwest::header::AUTHORIZATION).is_none());
+        for _ in 0..2 {
+            let request = never.fill_credential(client.get("http://localhost/")).await?.build()?;
+            assert!(request.headers().get(reqwest::header::AUTHORIZATION).is_none());
+        }
+        assert_eq!(calls(), 4);
         let allowed = SSHCredentialHelper::new(&url, &repo, Operation::Download, Interaction::Allowed);
         assert!(allowed.fill_credential(client.get("http://localhost/")).await.is_err());
+        Ok(())
+    }
+
+    // `ConnectTimeout` doesn't cover a remote command that stalls after connecting, so batch mode must bound the whole
+    // call itself rather than block the Git filter waiting on it.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial(env_var_write_read)]
+    async fn batch_gives_up_on_a_stalled_ssh_call() -> Result<()> {
+        use std::time::{Duration, Instant};
+
+        let test_repo = TestRepo::new("main")?;
+        let dir = test_repo.path();
+        let _ssh = fake_ssh(dir)?;
+        std::fs::write(dir.join("expires"), "hang")?;
+        let repo = GitRepo::open(dir)?;
+        let url: GitUrl = "ssh://git@hf.co/datasets/org/repo".parse()?;
+        let client = reqwest_middleware::ClientWithMiddleware::from(reqwest::Client::new());
+        let never = SSHCredentialHelper::new(&url, &repo, Operation::Download, Interaction::Never);
+
+        let start = Instant::now();
+        let request = never.fill_credential(client.get("http://localhost/")).await?.build()?;
+        assert!(request.headers().get(reqwest::header::AUTHORIZATION).is_none());
+        assert!(start.elapsed() < Duration::from_secs(10));
+
+        // The failure is remembered, so a later request doesn't wait again.
+        let start = Instant::now();
+        never.fill_credential(client.get("http://localhost/")).await?;
+        assert!(start.elapsed() < Duration::from_secs(1));
         Ok(())
     }
 
