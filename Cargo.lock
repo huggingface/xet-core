@@ -1788,6 +1788,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "xet-client",
  "xet-runtime",
 ]
