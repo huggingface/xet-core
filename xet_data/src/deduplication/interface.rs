@@ -21,7 +21,12 @@ pub trait DeduplicationDataInterface: Send + Sync + 'static {
     /// The error type used for the interface
     type ErrorType;
 
-    /// Query for possible shards that
+    /// Finds the longest known run of chunks at the start of `query_hashes`.
+    ///
+    /// Returns the number of chunks matched, the file data sequence entry that references them, and whether the
+    /// referenced xorb is already persisted outside this session. When true, the session never transfers that xorb,
+    /// so progress counts those bytes as complete immediately. When false, the xorb is one this session still
+    /// uploads, and the bytes complete with that upload. Returns `None` if the first chunk is unknown.
     async fn chunk_hash_dedup_query(
         &self,
         query_hashes: &[MerkleHash],
