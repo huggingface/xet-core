@@ -41,8 +41,12 @@ use crate::progress_tracking::{GroupProgressReport, ItemProgressReport, UploadGr
 /// Whether successful writes through the supplied client establish remote shard availability.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub enum UploadShardCachePolicy {
+    /// Writes reach the remote CAS: export uploaded shards to the shared shard cache, and record uploaded xorbs so
+    /// later sessions for the same endpoint can resume against them.
     #[default]
     Populate,
+    /// Writes don't establish remote availability, for example with a local staging client: leave both the shared
+    /// shard cache and the xorb resume records untouched.
     Skip,
 }
 

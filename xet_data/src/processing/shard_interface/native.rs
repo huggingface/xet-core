@@ -206,8 +206,9 @@ impl SessionShardInterface {
 
     // Add in uploaded xorb information that has been known to be uploaded successfully.
     pub async fn add_uploaded_xorb_block(&self, xorb_block_contents: Arc<MDBXorbInfo>) -> Result<()> {
-        // Ignore this part of a dry run
-        if self.dry_run {
+        // These records are shared by later sessions for the same endpoint, which then treat the xorbs as already on
+        // the remote. Skip them for a dry run, and for clients whose writes don't establish remote availability.
+        if self.dry_run || self.cache_policy == UploadShardCachePolicy::Skip {
             return Ok(());
         }
 
@@ -352,5 +353,51 @@ impl SessionShardInterface {
         }
 
         Ok(shard_bytes_uploaded.load(Ordering::Relaxed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use xet_client::cas_client::MemoryClient;
+    use xet_core_structures::metadata_shard::xorb_structs::{XorbChunkSequenceEntry, XorbChunkSequenceHeader};
+    use xet_runtime::config::XetConfig;
+
+    use super::*;
+    use crate::progress_tracking::UploadGroupProgress;
+
+    // Resume records tell later sessions for the same endpoint that a xorb is already on the remote, so a session whose
+    // client doesn't establish remote availability must not write them.
+    #[tokio::test]
+    async fn uploaded_xorb_records_are_written_only_when_populating_cache() -> Result<()> {
+        for (cache_policy, expected_records) in
+            [(UploadShardCachePolicy::Populate, 1), (UploadShardCachePolicy::Skip, 0)]
+        {
+            let mut runtime_config = XetConfig::new();
+            runtime_config.data.session_xorb_metadata_flush_max_count = 1;
+            let ctx = XetContext::from_external(tokio::runtime::Handle::current(), runtime_config);
+            let dir = tempfile::tempdir()?;
+            let config = Arc::new(TranslatorConfig::memory_config(&ctx, dir.path())?);
+            let interface = SessionShardInterface::new(
+                &ctx,
+                config.clone(),
+                MemoryClient::new(ctx.clone()),
+                Arc::new(CompletionTracker::new(UploadGroupProgress::new())),
+                false,
+                cache_policy,
+            )
+            .await?;
+
+            let chunk = XorbChunkSequenceEntry::new(MerkleHash::from([1, 2, 3, 4]), 10, 0);
+            interface
+                .add_uploaded_xorb_block(Arc::new(MDBXorbInfo {
+                    metadata: XorbChunkSequenceHeader::new(MerkleHash::from([5, 6, 7, 8]), 1, 10),
+                    chunks: vec![chunk],
+                }))
+                .await?;
+
+            let records = std::fs::read_dir(config.shard_session_directory.join("xorb_metadata"))?.count();
+            assert_eq!(records, expected_records);
+        }
+        Ok(())
     }
 }
