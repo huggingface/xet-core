@@ -96,7 +96,6 @@ tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
 tokio_with_wasm = { workspace = true, features = ["rt", "sync"] }
 
 [dev-dependencies]
-async-std = { workspace = true }
 futures = { workspace = true }
 serial_test = { workspace = true }
 smol = { workspace = true }
