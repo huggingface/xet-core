@@ -1019,4 +1019,77 @@ mod tests {
             })
             .unwrap();
     }
+
+    /// Dedup source backed by an in-memory shard, standing in for xorbs persisted outside the session.
+    struct InMemoryDeduplicationSource(xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard);
+
+    #[async_trait::async_trait]
+    impl DeduplicationSource for InMemoryDeduplicationSource {
+        async fn query(&self, hashes: &[MerkleHash]) -> Result<Option<(usize, FileDataSequenceEntry)>> {
+            Ok(self.0.chunk_hash_dedup_query(hashes))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_dedup_source_matches_are_not_uploaded() -> Result<()> {
+        use rand::prelude::*;
+        use xet_client::cas_client::MemoryClient;
+        use xet_core_structures::metadata_shard::xorb_structs::{
+            MDBXorbInfo, XorbChunkSequenceEntry, XorbChunkSequenceHeader,
+        };
+
+        use crate::deduplication::Chunker;
+
+        let mut data = vec![0u8; 512 * 1024];
+        StdRng::seed_from_u64(7).fill_bytes(&mut data);
+
+        // Describe the whole file as one xorb that exists only in the dedup source.
+        let source_xorb_hash = MerkleHash::from([9, 9, 9, 9]);
+        let mut chunk_entries = Vec::new();
+        let mut offset = 0;
+        for chunk in Chunker::default().next_block(&data, true) {
+            chunk_entries.push(XorbChunkSequenceEntry::new(chunk.hash, chunk.data.len(), offset));
+            offset += chunk.data.len();
+        }
+        let mut source_shard = xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard::default();
+        source_shard.add_xorb_block(Arc::new(MDBXorbInfo {
+            metadata: XorbChunkSequenceHeader::new(source_xorb_hash, chunk_entries.len(), data.len()),
+            chunks: chunk_entries,
+        }))?;
+
+        let ctx = XetContext::from_external(tokio::runtime::Handle::current(), xet_runtime::config::XetConfig::new());
+        let dir = tempfile::tempdir()?;
+        let session = FileUploadSession::new_with_client(
+            Arc::new(TranslatorConfig::memory_config(&ctx, dir.path())?),
+            MemoryClient::new(ctx.clone()),
+            Some(Arc::new(InMemoryDeduplicationSource(source_shard))),
+            UploadShardCachePolicy::Skip,
+        )
+        .await?;
+
+        let (_id, mut cleaner) =
+            session.start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Skip)?;
+        cleaner.add_data(&data).await?;
+        cleaner.finish().await?;
+
+        let progress = session.clone();
+        let (metrics, file_infos) = session.finalize_with_file_info().await?;
+
+        // Every byte is deduped against the source, so no xorb is uploaded.
+        assert_eq!(metrics.deduped_bytes, data.len() as u64);
+        assert_eq!(metrics.new_bytes, 0);
+        assert_eq!(metrics.xorb_bytes_uploaded, 0);
+
+        // The file is reconstructed from the source's xorb.
+        assert_eq!(file_infos.len(), 1);
+        let segments = &file_infos[0].segments;
+        assert!(!segments.is_empty());
+        assert!(segments.iter().all(|segment| segment.xorb_hash == source_xorb_hash));
+
+        // Progress completes without waiting for an upload of that xorb.
+        let report = progress.report();
+        assert_eq!(report.total_bytes, data.len() as u64);
+        assert_eq!(report.total_bytes_completed, data.len() as u64);
+        Ok(())
+    }
 }
