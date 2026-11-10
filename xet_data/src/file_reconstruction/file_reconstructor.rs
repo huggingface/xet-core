@@ -32,6 +32,7 @@ pub struct FileReconstructor {
     ctx: XetContext,
     client: Arc<dyn Client>,
     file_hash: MerkleHash,
+    file_size: Option<u64>,
     byte_range: Option<FileRange>,
     progress_updater: Option<Arc<ItemProgressUpdater>>,
     config: Arc<ReconstructionConfig>,
@@ -54,12 +55,22 @@ impl FileReconstructor {
             ctx: ctx.clone(),
             client: client.clone(),
             file_hash,
+            file_size: None,
             byte_range: None,
             progress_updater: default_progress_updater(),
             config: Arc::new(ctx.config.reconstruction.clone()),
             chunk_cache: None,
             custom_buffer_semaphore: None,
             cancellation_token: CancellationToken::new(),
+        }
+    }
+
+    /// Sets the known file size, capping reconstruction requests even when a byte range is supplied.
+    /// Ranges starting at or beyond this size produce no data or reconstruction requests.
+    pub fn with_file_size(self, file_size: u64) -> Self {
+        Self {
+            file_size: Some(file_size),
+            ..self
         }
     }
 
@@ -267,6 +278,7 @@ impl FileReconstructor {
         let Self {
             ctx,
             client,
+            file_size,
             byte_range,
             config,
             chunk_cache,
@@ -277,7 +289,11 @@ impl FileReconstructor {
         run_state.check_run_state()?;
 
         let file_hash = *run_state.file_hash();
-        let requested_range = byte_range.unwrap_or_else(FileRange::full);
+        let mut requested_range = byte_range.unwrap_or_else(FileRange::full);
+        if let Some(file_size) = file_size {
+            requested_range.end = requested_range.end.min(file_size);
+            requested_range.start = requested_range.start.min(requested_range.end);
+        }
 
         let mut term_manager = ReconstructionTermManager::new(
             ctx.clone(),
@@ -430,10 +446,8 @@ impl FileReconstructor {
         #[cfg(debug_assertions)]
         if !_is_streaming && let Some(updater) = run_state.progress_updater() {
             updater.assert_complete();
-            if let Some(byte_range) = byte_range
-                && byte_range.end < u64::MAX
-            {
-                assert_eq!(updater.total_bytes_completed(), byte_range.end - byte_range.start);
+            if requested_range.end < u64::MAX {
+                assert_eq!(updater.total_bytes_completed(), requested_range.end - requested_range.start);
             }
         }
 
@@ -1717,6 +1731,35 @@ mod tests {
     #[cfg(feature = "simulation")]
     mod server_tests {
         use super::*;
+
+        #[tokio::test]
+        async fn test_known_file_size_bounds_reconstruction_requests() {
+            let server = xet_client::cas_client::LocalTestServerBuilder::new().start().await;
+            let file = server
+                .client()
+                .upload_random_file(&[(1, (0, 3))], TEST_CHUNK_SIZE)
+                .await
+                .unwrap();
+            server.disable_v2_endpoints(404);
+            let file_size = file.data.len() as u64;
+            let mut config = test_config();
+            // An exact fetch boundary would require another query to discover EOF
+            // if the reconstructor ignored the supplied file size.
+            config.min_reconstruction_fetch_size = file_size.into();
+            config.max_reconstruction_fetch_size = (3 * file_size).into();
+
+            let buffer = Arc::new(std::sync::Mutex::new(Cursor::new(Vec::new())));
+            let written =
+                FileReconstructor::new(&XetContext::default().unwrap(), &server.remote_client(), file.file_hash)
+                    .with_config(&config)
+                    .with_file_size(file_size)
+                    .reconstruct_to_writer(StaticCursorWriter(buffer.clone()))
+                    .await
+                    .unwrap();
+            assert_eq!(written, file_size);
+            assert_eq!(buffer.lock().unwrap().get_ref(), &file.data);
+            assert_eq!(server.take_v1_reconstruction_ranges(), vec![Some(format!("bytes=0-{}", file_size - 1))]);
+        }
 
         // ==================== V1 Fallback Tests ====================
         //

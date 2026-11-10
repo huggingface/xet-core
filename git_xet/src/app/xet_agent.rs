@@ -3,6 +3,7 @@ use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
+use git_extension_common::{GitRepo, GitUrl, Scheme};
 use http::header;
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::hub_client::Operation;
@@ -22,8 +23,6 @@ fn xet_runtime() -> &'static XetContext {
 }
 
 use crate::errors::{GitXetError, Result};
-use crate::git_repo::GitRepo;
-use crate::git_url::{GitUrl, Scheme};
 use crate::lfs_agent_protocol::{
     GitLFSProtocolError, InitRequestInner, ProgressUpdater, TransferAgent, TransferRequest,
 };

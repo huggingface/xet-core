@@ -16,11 +16,11 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
-xet-runtime = { version = "1.7.0", path = "../xet_runtime" }
-xet-core-structures = { version = "1.7.0", path = "../xet_core_structures" }
-xet-client = { version = "1.7.0", path = "../xet_client", default-features = false }
+xet-runtime = { version = "1.8.0", path = "../xet_runtime" }
+xet-core-structures = { version = "1.8.0", path = "../xet_core_structures" }
+xet-client = { version = "1.8.0", path = "../xet_client", default-features = false }
 
-anyhow = { workspace = true }
+anyhow = { workspace = true, optional = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -81,7 +81,6 @@ path = "examples/xorb-check/main.rs"
 [dev-dependencies]
 clap = { workspace = true }
 criterion = { version = "0.7", features = ["async_tokio"] }
-ctor = { workspace = true }
 dirs = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
@@ -89,6 +88,7 @@ serial_test = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = { workspace = true }
 xet-client = { path = "../xet_client", features = ["simulation"] }
+xet-runtime = { path = "../xet_runtime", features = ["test-utils"] }
 
 [[bench]]
 name = "reconstruction_bench"
@@ -105,7 +105,7 @@ strict = []
 smoke-test = []
 expensive_tests = []
 # Internal tooling (the `x` and `xtool` binaries). Off by default.
-internal-tools = ["dep:clap"]
+internal-tools = ["dep:anyhow", "dep:clap"]
 fd-track = ["xet-runtime/fd-track", "xet-client/fd-track"]
 python = ["dep:pyo3"]
 simulation = ["xet-client/simulation", "xet-core-structures/simulation"]
