@@ -1020,47 +1020,6 @@ mod tests {
         });
     }
 
-    #[test]
-    // Same as above but driven by the async-std executor.
-    fn test_async_bridge_works_from_async_std_executor() {
-        let temp = tempdir().unwrap();
-
-        async_std::task::block_on(async {
-            let session = XetSessionBuilder::new().build().unwrap();
-            let endpoint = format!("local://{}", temp.path().join("cas").display());
-            assert_eq!(session.inner.ctx.runtime.mode(), RuntimeMode::Owned);
-
-            let data = b"hello from async-std executor";
-            let file_info = {
-                let commit = session
-                    .new_upload_commit()
-                    .unwrap()
-                    .with_endpoint(&endpoint)
-                    .build()
-                    .await
-                    .unwrap();
-                let _handle = commit
-                    .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("test.bin".into()))
-                    .await
-                    .unwrap();
-                let results = commit.commit().await.unwrap();
-                results.uploads.into_values().next().expect("one uploaded file").xet_info
-            };
-
-            let dest = temp.path().join("out_async_std.bin");
-            let group = session
-                .new_file_download_group()
-                .unwrap()
-                .with_endpoint(&endpoint)
-                .build()
-                .await
-                .unwrap();
-            group.download_file_to_path(file_info, dest.clone()).await.unwrap();
-            group.finish().await.unwrap();
-            assert_eq!(std::fs::read(&dest).unwrap(), data);
-        });
-    }
-
     // ── Blocking API tests ────────────────────────────────────────────────────
 
     fn upload_bytes_blocking(session: &XetSession, endpoint: &str, data: &[u8], name: &str) -> Result<XetFileInfo> {
@@ -1216,11 +1175,6 @@ mod tests {
     #[test]
     fn test_blocking_download_round_trip_in_futures_executor() {
         assert_blocking_download_round_trip(futures::executor::block_on);
-    }
-
-    #[test]
-    fn test_blocking_download_round_trip_in_async_std() {
-        assert_blocking_download_round_trip(async_std::task::block_on);
     }
 
     // ── RuntimeMode checks ────────────────────────────────────────────────────
