@@ -11,7 +11,7 @@ use tracing::{error, info};
 use xet_runtime::core::XetContext;
 
 use super::adaptive_concurrency::ConnectionPermit;
-use crate::common::http_client::request_id_from_response;
+use crate::common::http_client::{request_id_from_response, strip_url_query};
 use crate::error::{ClientError, Result};
 
 #[derive(Debug)]
@@ -31,8 +31,12 @@ pub struct RetryWrapper {
     max_duration: Duration,
     no_retry_on_429: bool,
     retry_on_403: bool,
+    retry_on_409: bool,
+    expected_400: bool,
+    expected_403: bool,
     expected_416: bool,
     expected_404: bool,
+    precondition_failed_as_success: bool,
     log_errors_as_info: bool,
     api_tag: &'static str,
     connection_permit: Option<Mutex<ConnectionPermitInfo>>,
@@ -49,8 +53,12 @@ impl RetryWrapper {
             max_duration,
             no_retry_on_429: false,
             retry_on_403: false,
+            retry_on_409: false,
+            expected_400: false,
+            expected_403: false,
             expected_416: false,
             expected_404: false,
+            precondition_failed_as_success: false,
             log_errors_as_info: false,
             api_tag,
             connection_permit: None,
@@ -82,6 +90,28 @@ impl RetryWrapper {
         self
     }
 
+    /// Retry 409 (Conflict) responses, e.g. a conditional write that conflicts with an earlier attempt that is
+    /// still completing.
+    pub fn with_retry_on_409(mut self) -> Self {
+        self.retry_on_409 = true;
+        self
+    }
+
+    /// Mark 400 responses as expected (e.g. a storage provider's request timeout on an upload grant, which the caller
+    /// replaces). A 400 is returned as a fatal error, logged as info, and not reported to the connection permit as a
+    /// failed transfer.
+    pub fn with_expected_400(mut self) -> Self {
+        self.expected_400 = true;
+        self
+    }
+
+    /// Mark 403 responses as expected (e.g. an expired upload grant that the caller replaces). A 403 is returned as
+    /// a fatal error, logged as info, and not reported to the connection permit as a failed transfer.
+    pub fn with_expected_403(mut self) -> Self {
+        self.expected_403 = true;
+        self
+    }
+
     pub fn with_expected_416(mut self) -> Self {
         self.expected_416 = true;
         self
@@ -93,6 +123,14 @@ impl RetryWrapper {
     /// a cache miss instead of the misleading `"Fatal Error"`.
     pub fn with_expected_404(mut self) -> Self {
         self.expected_404 = true;
+        self
+    }
+
+    /// Treat 412 (Precondition Failed) responses as success, for conditional uploads where a 412 means an
+    /// earlier attempt already stored the data. The response is passed to the caller and reported to the
+    /// connection permit as a completed transfer.
+    pub fn with_412_as_success(mut self) -> Self {
+        self.precondition_failed_as_success = true;
         self
     }
 
@@ -118,8 +156,12 @@ impl std::fmt::Debug for RetryWrapper {
             .field("max_duration", &self.max_duration)
             .field("no_retry_on_429", &self.no_retry_on_429)
             .field("retry_on_403", &self.retry_on_403)
+            .field("retry_on_409", &self.retry_on_409)
+            .field("expected_400", &self.expected_400)
+            .field("expected_403", &self.expected_403)
             .field("expected_416", &self.expected_416)
             .field("expected_404", &self.expected_404)
+            .field("precondition_failed_as_success", &self.precondition_failed_as_success)
             .field("log_errors_as_info", &self.log_errors_as_info)
             .field("api_tag", &self.api_tag)
             .field("has_connection_permit", &self.connection_permit.is_some())
@@ -132,6 +174,10 @@ impl RetryWrapper {
         let api = &self.api_tag;
 
         let process_error = |txt, log_as_info, err: reqwest_middleware::Error| {
+            let err = match err {
+                reqwest_middleware::Error::Reqwest(e) => reqwest_middleware::Error::Reqwest(strip_url_query(e)),
+                e => e,
+            };
             let msg = {
                 if try_idx > 0 {
                     format!("{txt}: {api} api call failed (retry {try_idx}): {err}")
@@ -185,6 +231,7 @@ impl RetryWrapper {
 
         // Log the errors and create a message string with the information in it to expose to users.
         let process_error = |context, err: ReqwestError, log_as_info| {
+            let err = strip_url_query(err);
             if self.log_errors_as_info || log_as_info {
                 info!("{context}: {api:?} api call failed (request id {request_id}{retry_str}): {err}");
             } else {
@@ -192,6 +239,13 @@ impl RetryWrapper {
             }
             ClientError::from(err)
         };
+
+        if resp.status() == StatusCode::PRECONDITION_FAILED && self.precondition_failed_as_success {
+            info!(
+                "Request Success: {api} api call returned 412 (request id {request_id}{retry_str}), treated as success."
+            );
+            return Ok(resp);
+        }
 
         let retriability = default_on_request_success(&resp);
 
@@ -201,6 +255,15 @@ impl RetryWrapper {
                 if e.status() == Some(StatusCode::FORBIDDEN) && self.retry_on_403 {
                     let cas_err = process_error("Retry on 403 (Forbidden) enabled)", e, true);
                     Err(RetryableReqwestError::RetryableError(cas_err))
+                } else if e.status() == Some(StatusCode::CONFLICT) && self.retry_on_409 {
+                    let cas_err = process_error("Retry on 409 (Conflict) enabled", e, true);
+                    Err(RetryableReqwestError::RetryableError(cas_err))
+                } else if e.status() == Some(StatusCode::BAD_REQUEST) && self.expected_400 {
+                    let cas_err = process_error("Bad Request", e, true);
+                    Err(RetryableReqwestError::FatalError(cas_err))
+                } else if e.status() == Some(StatusCode::FORBIDDEN) && self.expected_403 {
+                    let cas_err = process_error("Forbidden", e, true);
+                    Err(RetryableReqwestError::FatalError(cas_err))
                 } else if e.status() == Some(StatusCode::RANGE_NOT_SATISFIABLE) && self.expected_416 {
                     let cas_err = process_error("Reached end of reconstruction 416 (Range Not Satisfiable)", e, true);
                     Err(RetryableReqwestError::FatalError(cas_err))
@@ -329,6 +392,14 @@ impl RetryWrapper {
                                         )
                                         .await;
                                 }
+                            },
+                            Err(RetryableReqwestError::FatalError(e))
+                                if (self_.expected_400 && e.status() == Some(StatusCode::BAD_REQUEST))
+                                    || (self_.expected_403 && e.status() == Some(StatusCode::FORBIDDEN)) =>
+                            {
+                                // Dropping the permit without reporting keeps the expected 400 or 403 out of the
+                                // concurrency statistics.
+                                permit_info.permit.take();
                             },
                             Err(RetryableReqwestError::FatalError(_)) => {
                                 if let Some(permit) = permit_info.permit.take() {
@@ -602,6 +673,7 @@ mod tests {
     use xet_runtime::core::XetContext;
 
     use super::*;
+    use crate::cas_client::adaptive_concurrency::AdaptiveConcurrencyController;
 
     #[test]
     fn test_exponential_retry_strategy() {
@@ -968,6 +1040,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_412_as_success_returns_response() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PUT"))
+            .and(path("/precondition_failed"))
+            .respond_with(ResponseTemplate::new(412))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client();
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_ = counter.clone();
+
+        let result = connection_wrapper("test_412_as_success_returns_response")
+            .with_max_attempts(3)
+            .with_412_as_success()
+            .run(move || {
+                let url = format!("{}/precondition_failed", server.uri());
+                counter_.fetch_add(1, Ordering::Relaxed);
+                client.clone().put(&url).send()
+            })
+            .await;
+
+        assert_eq!(result.unwrap().status(), StatusCode::PRECONDITION_FAILED);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn test_403_no_retry_by_default() {
         let server = MockServer::start().await;
 
@@ -993,6 +1094,60 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_400_expected_keeps_concurrency() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PUT"))
+            .and(path("/bad_request"))
+            .respond_with(ResponseTemplate::new(400))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let controller = AdaptiveConcurrencyController::new_testing(4, (1, 4));
+        // Wait out the testing controller's minimum delay between concurrency decreases.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let permit = controller.acquire_connection_permit().await.unwrap();
+
+        let client = make_client();
+        let result = connection_wrapper("test_400_expected_keeps_concurrency")
+            .with_expected_400()
+            .with_connection_permit(permit, Some(1))
+            .run(move || client.clone().put(format!("{}/bad_request", server.uri())).send())
+            .await;
+
+        assert_eq!(result.unwrap_err().status(), Some(StatusCode::BAD_REQUEST));
+        assert_eq!(controller.total_permits(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_403_expected_keeps_concurrency() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PUT"))
+            .and(path("/forbidden"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let controller = AdaptiveConcurrencyController::new_testing(4, (1, 4));
+        // Wait out the testing controller's minimum delay between concurrency decreases.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let permit = controller.acquire_connection_permit().await.unwrap();
+
+        let client = make_client();
+        let result = connection_wrapper("test_403_expected_keeps_concurrency")
+            .with_expected_403()
+            .with_connection_permit(permit, Some(1))
+            .run(move || client.clone().put(format!("{}/forbidden", server.uri())).send())
+            .await;
+
+        assert_eq!(result.unwrap_err().status(), Some(StatusCode::FORBIDDEN));
+        assert_eq!(controller.total_permits(), 4);
     }
 
     #[tokio::test]
@@ -1058,5 +1213,53 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(&result.unwrap().bytes().await.unwrap()[..], b"Success");
         assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_error_strips_url_query() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let client = make_client();
+        let err = connection_wrapper("test_error_strips_url_query")
+            .with_max_attempts(1)
+            .run(move || client.clone().put(format!("http://{addr}/xorb?X-Amz-Signature=secret")).send())
+            .await
+            .unwrap_err();
+
+        assert!(!format!("{err} {err:?}").contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn test_409_retry_then_success() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("PUT"))
+            .and(path("/conflict_then_ok"))
+            .respond_with(ResponseTemplate::new(409))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("PUT"))
+            .and(path("/conflict_then_ok"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client();
+        let result = connection_wrapper("test_409_retry_then_success")
+            .with_max_attempts(3)
+            .with_retry_on_409()
+            .run(move || {
+                let url = format!("{}/conflict_then_ok", server.uri());
+                client.clone().put(&url).send()
+            })
+            .await;
+
+        assert_eq!(result.unwrap().status(), StatusCode::OK);
     }
 }

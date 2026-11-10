@@ -15,15 +15,13 @@ name = "xet_runtime"
 path = "src/lib.rs"
 
 [dependencies]
-anyhow = { workspace = true }
 chrono = { workspace = true }
 colored = { workspace = true }
-const-str = "1.1"
-ctor = { workspace = true }
+const-str = { workspace = true }
 dirs = { workspace = true }
 humantime = { workspace = true }
 git-version = { workspace = true }
-konst = "0.4"
+konst = { workspace = true }
 libc = { workspace = true }
 more-asserts = { workspace = true }
 oneshot = { workspace = true }
@@ -40,6 +38,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 console-subscriber = { workspace = true, optional = true }
+ctor = { workspace = true, optional = true }
 pyo3 = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
@@ -57,7 +56,6 @@ tokio = { workspace = true, features = [
     "time",
 ] }
 tokio_with_wasm = { workspace = true, features = ["rt", "sync", "time"] }
-web-time = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 shellexpand = { workspace = true, features = ["path"] }
@@ -86,12 +84,16 @@ fd-track = []
 python = ["dep:pyo3"]
 tokio-console = ["dep:console-subscriber"]
 simulation = []
+# `test_set_constants!` / `test_set_config!` for tests in dependent crates. Keeps `ctor`, whose
+# load-time hooks can break large downstream links, out of production builds.
+test-utils = ["dep:ctor"]
 
 [[bin]]
 name = "log_test_executable"
 path = "tests/bin/log_test_executable.rs"
 
 [dev-dependencies]
+anyhow = { workspace = true }
 futures-util = { workspace = true }
 rand = { workspace = true }
 serial_test = { workspace = true }

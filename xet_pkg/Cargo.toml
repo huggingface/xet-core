@@ -47,10 +47,10 @@ path = "examples/example_sync.rs"
 required-features = ["internal-tools"]
 
 [dependencies]
-xet-runtime = { version = "1.7.0", path = "../xet_runtime" }
-xet-core-structures = { version = "1.7.0", path = "../xet_core_structures" }
-xet-client = { version = "1.7.0", path = "../xet_client", default-features = false }
-xet-data = { version = "1.7.0", path = "../xet_data", default-features = false }
+xet-runtime = { version = "1.8.0", path = "../xet_runtime" }
+xet-core-structures = { version = "1.8.0", path = "../xet_core_structures" }
+xet-client = { version = "1.8.0", path = "../xet_client", default-features = false }
+xet-data = { version = "1.8.0", path = "../xet_data", default-features = false }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -96,7 +96,6 @@ tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
 tokio_with_wasm = { workspace = true, features = ["rt", "sync"] }
 
 [dev-dependencies]
-async-std = { workspace = true }
 futures = { workspace = true }
 serial_test = { workspace = true }
 smol = { workspace = true }

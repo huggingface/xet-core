@@ -191,9 +191,12 @@ macro_rules! test_configurable_constants {
     };
 }
 
+// Used only by the expansions of `test_set_constants!` and `test_set_config!`.
+#[cfg(feature = "test-utils")]
+#[doc(hidden)]
 pub use ctor as ctor_reexport;
 
-#[cfg(not(doctest))]
+#[cfg(all(feature = "test-utils", not(doctest)))]
 /// A macro for **tests** that sets `HF_XET_<CONSTANT_NAME>` to `$value` **before**
 /// the constant is initialized, and then checks that the constant actually picks up
 /// that value. If the constant was already accessed (thus initialized), or if it
@@ -224,9 +227,12 @@ macro_rules! test_set_constants {
     ($(
         $var_name:ident = $val:expr;
     )+) => {
-        use $crate::configuration_utils::ctor_reexport as ctor;
-
-        #[ctor::ctor(unsafe)]
+        // `#[ctor]` expands to `::ctor::...` by default, which would require every caller to depend on `ctor`.
+        // `crate_path` points it at xet_runtime's re-export, so enabling `xet-runtime/test-utils` is enough.
+        #[$crate::configuration_utils::ctor_reexport::ctor(
+            unsafe,
+            crate_path = $crate::configuration_utils::ctor_reexport
+        )]
         fn set_constants_on_load() {
             $(
                 let val = $val;
@@ -259,7 +265,7 @@ macro_rules! test_set_constants {
     }
 }
 
-#[cfg(not(doctest))]
+#[cfg(all(feature = "test-utils", not(doctest)))]
 /// A macro for **tests** that sets config group environment variables **before**
 /// XetContext is initialized. The environment variables follow the pattern
 /// `HF_XET_{GROUP_NAME}_{FIELD_NAME}`.
@@ -295,9 +301,12 @@ macro_rules! test_set_config {
             )+
         }
     )+) => {
-        use $crate::configuration_utils::ctor_reexport as config_ctor;
-
-        #[config_ctor::ctor(unsafe)]
+        // `#[ctor]` expands to `::ctor::...` by default, which would require every caller to depend on `ctor`.
+        // `crate_path` points it at xet_runtime's re-export, so enabling `xet-runtime/test-utils` is enough.
+        #[$crate::configuration_utils::ctor_reexport::ctor(
+            unsafe,
+            crate_path = $crate::configuration_utils::ctor_reexport
+        )]
         fn set_config_on_load() {
             $(
                 let group_name_upper = stringify!($group_name).to_uppercase();

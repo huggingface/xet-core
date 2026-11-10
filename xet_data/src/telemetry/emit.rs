@@ -8,7 +8,7 @@ use std::sync::Arc;
 use xet_client::cas_client::{Client, Direction, TransferTelemetry};
 
 use super::outcome::{ERROR_CLASS_NONE, Outcome};
-use super::payload::{CommonInputs, CommonMetrics, DownloadMetrics, TransferIdentity, UploadMetrics};
+use super::payload::{CommonInputs, CommonMetrics, DownloadMetrics, TransferIdentity, UploadMetrics, XorbUploadPaths};
 use crate::deduplication::DeduplicationMetrics;
 use crate::error::DataError;
 use crate::progress_tracking::GroupProgressReport;
@@ -76,6 +76,7 @@ fn upload_metrics(
         common,
         snapshot.dedup,
         snapshot.progress,
+        XorbUploadPaths::from(telemetry),
         snapshot.ingest_ms,
         snapshot.finalize_ms,
     ))
@@ -219,7 +220,14 @@ pub(crate) fn start_upload_heartbeat(
         );
         // `ingest_ms` is still accruing and `finalize_ms` has not started; zero rather than a
         // half-truth, and `duration_ms` already carries elapsed time.
-        Some(to_value(UploadMetrics::new(common, &dedup, &progress, 0, 0)))
+        Some(to_value(UploadMetrics::new(
+            common,
+            &dedup,
+            &progress,
+            XorbUploadPaths::from(identity.as_ref()),
+            0,
+            0,
+        )))
     });
 }
 

@@ -19,7 +19,7 @@ pub use constants::{
 };
 pub use file_structs::Sha256;
 pub use shard_file_handle::{MDBShardFile, ShardFileCache, new_shard_file_cache};
-pub use shard_file_manager::{ShardFileManager, get_shard_file_cache};
+pub use shard_file_manager::{ChunkIndexSizeEnforcement, ShardFileManager, get_shard_file_cache};
 pub use shard_format::{MDBShardFileFooter, MDBShardFileHeader, MDBShardInfo};
 
 // Temporary to transition dependent code to new location

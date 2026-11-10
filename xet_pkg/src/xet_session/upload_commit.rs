@@ -1309,34 +1309,6 @@ mod tests {
         });
     }
 
-    #[test]
-    fn test_async_bridge_works_from_async_std_executor() {
-        let temp = tempdir().unwrap();
-
-        let endpoint = format!("local://{}", temp.path().join("cas").display());
-        async_std::task::block_on(async {
-            let session = XetSessionBuilder::new().build().unwrap();
-            assert_eq!(session.inner.ctx.runtime.mode(), RuntimeMode::Owned);
-
-            let data = b"hello from async-std executor";
-            let commit = session
-                .new_upload_commit()
-                .unwrap()
-                .with_endpoint(&endpoint)
-                .build()
-                .await
-                .unwrap();
-            let handle = commit
-                .upload_bytes(data.to_vec(), Sha256Policy::Compute, Some("test.bin".into()))
-                .await
-                .unwrap();
-            commit.commit().await.unwrap();
-
-            let meta = handle.try_finish().unwrap();
-            assert_eq!(meta.xet_info.file_size, Some(data.len() as u64));
-        });
-    }
-
     // ── Blocking API tests ────────────────────────────────────────────────────
 
     #[test]
@@ -1497,11 +1469,6 @@ mod tests {
     #[test]
     fn test_blocking_upload_round_trip_in_futures_executor() {
         assert_blocking_upload_round_trip(|fut| futures::executor::block_on(fut));
-    }
-
-    #[test]
-    fn test_blocking_upload_round_trip_in_async_std() {
-        assert_blocking_upload_round_trip(|fut| async_std::task::block_on(fut));
     }
 
     // ── External-mode _blocking guard ────────────────────────────────────────

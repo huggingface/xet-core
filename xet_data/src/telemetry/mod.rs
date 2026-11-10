@@ -30,4 +30,5 @@ pub use outcome::{ERROR_CLASS_NONE, Outcome, classify_error, error_class, outcom
 #[cfg(not(target_family = "wasm"))]
 pub use payload::{
     CommonInputs, CommonMetrics, DownloadMetrics, TELEMETRY_SCHEMA_VERSION, TransferIdentity, UploadMetrics,
+    XorbUploadPaths,
 };
