@@ -1,15 +1,25 @@
-//! Chooses the credential for Hub requests made on behalf of a repository. The first available
-//! source wins:
+//! Chooses the credential for Hub requests made on behalf of a repository.
+//!
+//! The credential is the identity Git itself uses for the remote, so uploads and `git push` act as
+//! the same user. An SSH remote always uses SSH authentication (`git-lfs-authenticate`), as Git LFS
+//! does. For an HTTP(S) remote, the first available source wins:
 //!
 //! 1. a token embedded in the remote URL (`https://user:token@host/...`);
-//! 2. the `HF_TOKEN` environment variable, or the legacy `HUGGING_FACE_HUB_TOKEN`;
-//! 3. the Hugging Face token file written by `hf auth login`;
-//! 4. `.netrc`, matched by the remote's HTTP host;
-//! 5. for SSH remotes, SSH authentication; otherwise Git's credential helpers.
+//! 2. `.netrc`, matched by the remote's hostname, which Git also reads;
+//! 3. Git's credential helpers. With [`Interaction::Allowed`], Git may prompt.
 //!
-//! [`Interaction::Never`] never prompts: credential helpers return only stored credentials, SSH runs
-//! in batch mode, and if nothing is found the request is anonymous, which is enough to read public
-//! repositories. [`Interaction::Allowed`] may prompt in step 5 and fails if no credential results.
+//! [`Interaction::Allowed`] (pre-push) fails if none of these yields a credential.
+//!
+//! [`Interaction::Never`] (the clean filter) never prompts: SSH runs in batch mode, and helpers return
+//! only stored credentials. A credential there improves deduplication but isn't required, so if an
+//! HTTP(S) remote has none of the above, it falls back to:
+//!
+//! 4. the `HF_TOKEN` environment variable, or the legacy `HUGGING_FACE_HUB_TOKEN`;
+//! 5. the Hugging Face token file written by `hf auth login`;
+//!
+//! and otherwise makes anonymous requests, which are enough to read public repositories. Steps 4 and 5
+//! aren't tied to a host, so they apply only to Hub hosts (`huggingface.co`, `hf.co`, the staging Hub,
+//! or the host of `HF_ENDPOINT`); a repository's `.gitattributes` can't send a Hub token elsewhere.
 #![cfg_attr(not(test), expect(dead_code, reason = "used by the clean filter and pre-push"))]
 
 use std::fmt;
@@ -18,10 +28,14 @@ use std::sync::Arc;
 
 use git_extension_common::{GitCredentialHelper, GitRepo, GitUrl, Interaction, SSHCredentialHelper, Scheme};
 use netrc::Netrc;
+use url::Url;
 use xet_client::error::ClientError;
 use xet_client::hub_client::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper, Operation};
 
-use crate::constants::{AUTH_GUIDANCE, HF_HOME_ENV, HF_TOKEN_ENV, HF_TOKEN_PATH_ENV, LEGACY_HF_TOKEN_ENV};
+use crate::constants::{
+    AUTH_GUIDANCE, HF_ENDPOINT_ENV, HF_HOME_ENV, HF_TOKEN_ENV, HF_TOKEN_PATH_ENV, HUB_HOSTS, LEGACY_HF_TOKEN_ENV,
+    SSH_AUTH_GUIDANCE,
+};
 use crate::{GitHfError, Result};
 
 /// Where a [`ResolvedCredential`] came from, for messages. Never includes the secret itself.
@@ -79,8 +93,8 @@ impl ResolvedCredential {
         };
         let source = &self.source;
         let guidance = match remote_url.scheme() {
-            Scheme::Ssh | Scheme::GitSsh => format!("{AUTH_GUIDANCE}, or add your SSH key to your account"),
-            _ => AUTH_GUIDANCE.to_owned(),
+            Scheme::Ssh | Scheme::GitSsh => SSH_AUTH_GUIDANCE,
+            _ => AUTH_GUIDANCE,
         };
         Some(match (status, source) {
             (401 | 404, CredentialSource::Anonymous) => {
@@ -114,25 +128,6 @@ pub fn resolve_credential(
         source,
     };
 
-    if let (Some(_user), Some(token)) = remote_url.credential() {
-        return Ok(bearer(token, CredentialSource::RemoteUrl, "url"));
-    }
-    // As in huggingface_hub, a blank `HF_TOKEN` falls through to the legacy name.
-    for name in [HF_TOKEN_ENV, LEGACY_HF_TOKEN_ENV] {
-        if let Some(token) = std::env::var(name).ok().filter(|token| !token.trim().is_empty()) {
-            return Ok(bearer(token.trim().to_owned(), CredentialSource::Environment(name), "env"));
-        }
-    }
-    if let Some(path) = token_file_path()
-        && let Some(token) = read_token_file(&path)?
-    {
-        return Ok(bearer(token, CredentialSource::TokenFile(path), "token-file"));
-    }
-    let host_url = remote_url.to_derived_http_host_url()?;
-    if let Some(token) = netrc_token(&host_url) {
-        return Ok(bearer(token, CredentialSource::Netrc, "netrc"));
-    }
-
     if matches!(remote_url.scheme(), Scheme::Ssh | Scheme::GitSsh) {
         return Ok(ResolvedCredential {
             helper: SSHCredentialHelper::new(remote_url, repo, operation, interaction),
@@ -140,20 +135,43 @@ pub fn resolve_credential(
         });
     }
 
-    match GitCredentialHelper::new(repo.git_path()?, &host_url, interaction)? {
-        Some(helper) => Ok(ResolvedCredential {
+    if let (Some(_user), Some(token)) = remote_url.credential() {
+        return Ok(bearer(token, CredentialSource::RemoteUrl, "url"));
+    }
+    let host_url = remote_url.to_derived_http_host_url()?;
+    if let Some(token) = netrc_token(&host_url) {
+        return Ok(bearer(token, CredentialSource::Netrc, "netrc"));
+    }
+    if let Some(helper) = GitCredentialHelper::new(repo.git_path()?, &host_url, interaction)? {
+        return Ok(ResolvedCredential {
             helper,
             source: CredentialSource::GitCredentialHelper,
-        }),
-        None if matches!(interaction, Interaction::Never) => Ok(ResolvedCredential {
-            helper: NoopCredentialHelper::new(),
-            source: CredentialSource::Anonymous,
-        }),
-        None => Err(GitHfError::Auth(format!(
+        });
+    }
+
+    if matches!(interaction, Interaction::Allowed) {
+        return Err(GitHfError::Auth(format!(
             "no credentials found for {} on {host_url}; {AUTH_GUIDANCE}",
             remote_url.full_repo_path()
-        ))),
+        )));
     }
+    if is_hub_host(&host_url) {
+        // As in huggingface_hub, a blank `HF_TOKEN` falls through to the legacy name.
+        for name in [HF_TOKEN_ENV, LEGACY_HF_TOKEN_ENV] {
+            if let Some(token) = std::env::var(name).ok().filter(|token| !token.trim().is_empty()) {
+                return Ok(bearer(token.trim().to_owned(), CredentialSource::Environment(name), "env"));
+            }
+        }
+        if let Some(path) = token_file_path()
+            && let Some(token) = read_token_file(&path)?
+        {
+            return Ok(bearer(token, CredentialSource::TokenFile(path), "token-file"));
+        }
+    }
+    Ok(ResolvedCredential {
+        helper: NoopCredentialHelper::new(),
+        source: CredentialSource::Anonymous,
+    })
 }
 
 /// The token file `huggingface_hub` uses: `$HF_TOKEN_PATH`, else `$HF_HOME/token`, else
@@ -182,13 +200,30 @@ fn read_token_file(path: &Path) -> Result<Option<String>> {
     }
 }
 
+/// Whether `host_url`, such as `https://hf.co`, names a Hub host: one of [`HUB_HOSTS`], or the host
+/// of `HF_ENDPOINT`. As in huggingface_hub, hosts are compared without ports.
+fn is_hub_host(host_url: &str) -> bool {
+    let Some(host) = hostname(host_url) else {
+        return false;
+    };
+    HUB_HOSTS.contains(&host.as_str())
+        || std::env::var(HF_ENDPOINT_ENV).is_ok_and(|endpoint| hostname(endpoint.trim()).as_ref() == Some(&host))
+}
+
+/// The host of a URL such as `https://user@host:port/path`, without user or port, lowercased for
+/// HTTP(S). `None` if `url` doesn't parse or has no host.
+fn hostname(url: &str) -> Option<String> {
+    Url::parse(url).ok()?.host_str().map(str::to_owned)
+}
+
+// `.netrc` has no port, so like curl (used by Git) and `requests`, match the hostname alone, ignoring case.
 fn netrc_token(host_url: &str) -> Option<String> {
-    let host = host_url.split("://").last()?;
+    let host = hostname(host_url)?;
     Netrc::new()
         .ok()?
         .hosts
         .into_iter()
-        .find(|(name, _)| name == host)
+        .find(|(name, _)| name.eq_ignore_ascii_case(&host))
         .map(|(_, auth)| auth.password)
 }
 
@@ -217,6 +252,7 @@ mod tests {
             EnvVarGuard::unset(LEGACY_HF_TOKEN_ENV),
             EnvVarGuard::unset(HF_TOKEN_PATH_ENV),
             EnvVarGuard::unset(HF_HOME_ENV),
+            EnvVarGuard::unset(HF_ENDPOINT_ENV),
             EnvVarGuard::unset("XDG_CACHE_HOME"),
             EnvVarGuard::unset("NETRC"),
             EnvVarGuard::unset("GIT_ASKPASS"),
@@ -265,8 +301,13 @@ mod tests {
 
         let url_with_token = "https://user:from-url@huggingface.co/datasets/org/repo";
         assert_eq!(resolve(&repo, url_with_token, Interaction::Never)?.source(), &CredentialSource::RemoteUrl);
+        assert_eq!(resolve(&repo, REMOTE, Interaction::Never)?.source(), &CredentialSource::Netrc);
+        let _no_netrc = EnvVarGuard::set("NETRC", repo.path().join("missing"));
+        // A stored Git credential, which `git push` also uses, comes before the Hub tokens.
+        assert_eq!(resolve(&repo, REMOTE, Interaction::Never)?.source(), &CredentialSource::GitCredentialHelper);
+        run_git_captured(repo.path(), "config", ["--replace-all", "credential.helper", ""])?;
         assert_eq!(resolve(&repo, REMOTE, Interaction::Never)?.source(), &CredentialSource::Environment(HF_TOKEN_ENV));
-        // A blank HF_TOKEN falls through to the legacy name, then to the token file.
+        // A blank HF_TOKEN falls through to the legacy name.
         let _blank = EnvVarGuard::set(HF_TOKEN_ENV, " ");
         let _legacy = EnvVarGuard::set(LEGACY_HF_TOKEN_ENV, "from-legacy");
         assert_eq!(
@@ -276,12 +317,106 @@ mod tests {
         let _no_legacy = EnvVarGuard::unset(LEGACY_HF_TOKEN_ENV);
         assert_eq!(resolve(&repo, REMOTE, Interaction::Never)?.source(), &CredentialSource::TokenFile(token_file));
         let _no_file = EnvVarGuard::unset(HF_TOKEN_PATH_ENV);
-        assert_eq!(resolve(&repo, REMOTE, Interaction::Never)?.source(), &CredentialSource::Netrc);
-        let _no_netrc = EnvVarGuard::set("NETRC", repo.path().join("missing"));
-        assert_eq!(resolve(&repo, REMOTE, Interaction::Never)?.source(), &CredentialSource::GitCredentialHelper);
+        assert_eq!(resolve(&repo, REMOTE, Interaction::Never)?.source(), &CredentialSource::Anonymous);
+        Ok(())
+    }
+
+    // HF_TOKEN and the token file aren't tied to a host, so a remote on another host, which a
+    // repository's own `.gitattributes` can make the clean filter contact, must not receive them.
+    #[test]
+    #[serial(env_var_write_read)]
+    fn host_independent_tokens_only_go_to_hub_hosts() -> anyhow::Result<()> {
+        let repo = TestRepo::new("main")?;
+        let _isolation = isolate(&repo)?;
+        let token_file = repo.path().join("token");
+        std::fs::write(&token_file, "from-file\n")?;
+        let _token_path = EnvVarGuard::set(HF_TOKEN_PATH_ENV, &token_file);
+
+        for url in [
+            "https://example.com/datasets/org/repo",
+            "http://example.com/datasets/org/repo",
+            // Only exact Hub hosts match.
+            "https://huggingface.co.example.com/datasets/org/repo",
+        ] {
+            assert_eq!(resolve(&repo, url, Interaction::Never)?.source(), &CredentialSource::Anonymous, "{url}");
+            let _token = EnvVarGuard::set(HF_TOKEN_ENV, "from-env");
+            assert_eq!(resolve(&repo, url, Interaction::Never)?.source(), &CredentialSource::Anonymous, "{url}");
+        }
+        // Sources bound to that host still apply.
+        let netrc = repo.path().join("netrc");
+        std::fs::write(&netrc, "machine example.com login user password from-netrc\n")?;
+        let _netrc = EnvVarGuard::set("NETRC", &netrc);
         assert_eq!(
-            resolve(&repo, "ssh://git@hf.co/datasets/org/repo", Interaction::Never)?.source(),
-            &CredentialSource::Ssh
+            resolve(&repo, "https://example.com/datasets/org/repo", Interaction::Never)?.source(),
+            &CredentialSource::Netrc
+        );
+
+        // Hub hosts match regardless of case, and HF_ENDPOINT adds its host, whatever the port.
+        let _token = EnvVarGuard::set(HF_TOKEN_ENV, "from-env");
+        let _endpoint = EnvVarGuard::set(HF_ENDPOINT_ENV, "http://localhost:5564/");
+        for url in [
+            "https://hf.co/datasets/org/repo",
+            "https://HuggingFace.co/datasets/org/repo",
+            "https://hub-ci.huggingface.co/datasets/org/repo",
+            "http://localhost:5564/datasets/org/repo",
+            "http://localhost:8080/datasets/org/repo",
+        ] {
+            assert_eq!(
+                resolve(&repo, url, Interaction::Never)?.source(),
+                &CredentialSource::Environment(HF_TOKEN_ENV),
+                "{url}"
+            );
+        }
+        Ok(())
+    }
+
+    // An SSH remote uses SSH, the identity `git push` uses, whatever other credentials exist: a token
+    // file or HF_TOKEN may hold a read token, and SSH only authenticates to the remote's own host.
+    #[test]
+    #[serial(env_var_write_read)]
+    fn ssh_remotes_always_use_ssh() -> anyhow::Result<()> {
+        let repo = TestRepo::new("main")?;
+        let _isolation = isolate(&repo)?;
+        store_credential(&repo, "from-helper")?;
+        let netrc = repo.path().join("netrc");
+        std::fs::write(&netrc, "machine hf.co login user password from-netrc\n")?;
+        let _netrc = EnvVarGuard::set("NETRC", &netrc);
+        let token_file = repo.path().join("token");
+        std::fs::write(&token_file, "from-file\n")?;
+        let _token_path = EnvVarGuard::set(HF_TOKEN_PATH_ENV, &token_file);
+        let _token = EnvVarGuard::set(HF_TOKEN_ENV, "from-env");
+
+        for url in [
+            "ssh://git@hf.co/datasets/org/repo",
+            "git@hf.co:datasets/org/repo",
+            "git@example.com:datasets/org/repo",
+        ] {
+            for interaction in [Interaction::Never, Interaction::Allowed] {
+                assert_eq!(resolve(&repo, url, interaction)?.source(), &CredentialSource::Ssh, "{url}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial(env_var_write_read)]
+    fn netrc_matches_the_hostname_without_port() -> anyhow::Result<()> {
+        let repo = TestRepo::new("main")?;
+        let _isolation = isolate(&repo)?;
+        let netrc = repo.path().join("netrc");
+        std::fs::write(&netrc, "machine hub.example.com login user password from-netrc\n")?;
+        let _netrc = EnvVarGuard::set("NETRC", &netrc);
+
+        for url in [
+            "https://hub.example.com/datasets/org/repo",
+            "https://hub.example.com:8443/datasets/org/repo",
+            "http://Hub.Example.com:5564/datasets/org/repo",
+        ] {
+            assert_eq!(resolve(&repo, url, Interaction::Never)?.source(), &CredentialSource::Netrc, "{url}");
+        }
+        assert_eq!(
+            resolve(&repo, "https://example.com:8443/datasets/org/repo", Interaction::Never)?.source(),
+            &CredentialSource::Anonymous
         );
         Ok(())
     }
@@ -344,18 +479,29 @@ mod tests {
         Ok(())
     }
 
+    // Pre-push uses only what `git push` can use: HF_TOKEN and the token file are never consulted.
     #[test]
     #[serial(env_var_write_read)]
-    fn interactive_lookup_uses_stored_credential_or_fails_clearly() -> anyhow::Result<()> {
+    fn interactive_lookup_uses_only_git_sources() -> anyhow::Result<()> {
         let repo = TestRepo::new("main")?;
         let _isolation = isolate(&repo)?;
+        let token_file = repo.path().join("token");
+        std::fs::write(&token_file, "from-file\n")?;
+        let _token_path = EnvVarGuard::set(HF_TOKEN_PATH_ENV, &token_file);
+        let _token = EnvVarGuard::set(HF_TOKEN_ENV, "from-env");
+
         // GIT_TERMINAL_PROMPT=0 stands in for a user who cannot answer the prompt.
         let error = resolve(&repo, REMOTE, Interaction::Allowed).err().unwrap().to_string();
-        assert!(error.contains("datasets/org/repo") && error.contains("HF_TOKEN"), "{error}");
+        assert!(error.contains("datasets/org/repo") && error.contains("credential helper"), "{error}");
 
+        let url_with_token = "https://user:from-url@huggingface.co/datasets/org/repo";
+        assert_eq!(resolve(&repo, url_with_token, Interaction::Allowed)?.source(), &CredentialSource::RemoteUrl);
         store_credential(&repo, "stored-token")?;
-        let resolved = resolve(&repo, REMOTE, Interaction::Allowed)?;
-        assert_eq!(resolved.source(), &CredentialSource::GitCredentialHelper);
+        assert_eq!(resolve(&repo, REMOTE, Interaction::Allowed)?.source(), &CredentialSource::GitCredentialHelper);
+        let netrc = repo.path().join("netrc");
+        std::fs::write(&netrc, "machine huggingface.co login user password from-netrc\n")?;
+        let _netrc = EnvVarGuard::set("NETRC", &netrc);
+        assert_eq!(resolve(&repo, REMOTE, Interaction::Allowed)?.source(), &CredentialSource::Netrc);
         Ok(())
     }
 

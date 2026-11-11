@@ -17,6 +17,7 @@ git2 = { workspace = true }
 rust-netrc = { workspace = true }
 shellexpand = { workspace = true, features = ["path"] }
 thiserror = { workspace = true }
+url = { workspace = true }
 xet-client = { path = "../xet_client" }
 xet-core-structures = { path = "../xet_core_structures" }
 xet_pointer_file = { path = "../xet_pointer_file" }
