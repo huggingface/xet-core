@@ -32,8 +32,29 @@ is skipped without being written, so `--all` works for non-root users whose syst
 isn't writable; `--all` also skips the local scope outside a repository. Other failures,
 such as a locked or unwritable config file that has a registration, are reported. `--all` still attempts every scope and returns the first error.
 
-Neither command modifies attributes, hooks, `core.hooksPath`, or diff/merge
-configuration. Hook installation belongs with the pre-push implementation.
+`git hf install --local` also installs the repository's `pre-push` hook, which will
+upload staged data when you push; `git hf uninstall --local` removes it. Because hooks
+belong to a repository, git-hf also installs the hook the first time it stores a file as
+a Xet pointer, so a global installation needs no extra step. Neither command modifies
+attributes or diff/merge configuration.
+
+An existing `pre-push` hook is left unchanged, and git-hf prints its path. To upload
+staged data when you push, edit that file (usually `.git/hooks/pre-push`; run
+`git rev-parse --git-path hooks` to find the hooks directory) and add this line right
+after the `#!` line, before any other command:
+
+```sh
+git-hf pre-push "$@" || exit 1
+```
+
+git-hf reads the refs being pushed from the hook's standard input. If the rest of the
+hook also reads standard input, save it first and pass a copy to each:
+
+```sh
+input=$(cat)
+printf '%s\n' "$input" | git-hf pre-push "$@" || exit 1
+printf '%s\n' "$input" | the-rest-of-the-hook
+```
 
 ## Process filter and local staging
 
@@ -69,8 +90,8 @@ Run `git-hf --help`, or put the binary on PATH and use `git hf --help`.
 | --- | --- |
 | `add <paths...>` | Stage whole files concurrently using automatic Xet selection, leaving worktree contents unchanged. |
 | `track` | Explain automatic file selection; no manual tracking is needed. |
-| `install [--local \| --global \| --system]` | Register the required `hf` filter; default scope is global. |
-| `uninstall [--local \| --global \| --system \| --all]` | Remove the hf filter section; default scope is global. |
+| `install [--local \| --global \| --system]` | Register the required `hf` filter; default scope is global. `--local` also installs the pre-push hook. |
+| `uninstall [--local \| --global \| --system \| --all]` | Remove the hf filter section; default scope is global. `--local` also removes the pre-push hook. |
 | `clone <git-clone-args...>` | Accept Git clone options, repository, and destination as an opaque argument list. |
 | `fetch [remote] [revision]` | Cache reconstruction metadata and xorb ranges for a local revision (default HEAD); do not fetch Git refs or reconstruct files. |
 | `checkout [--force] [paths...]` | Reconstruct selected index entries from local data only. |

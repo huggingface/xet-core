@@ -7,11 +7,13 @@ mod cli;
 mod constants;
 mod error;
 mod filter_protocol;
+mod hook;
 mod selection;
 mod staging;
 mod utils;
 
 pub use cli::GitHfApp;
+pub use constants::GIT_HF_PROGRAM;
 pub use error::{GitHfError, Result};
 pub use xet_pointer_file::{HexHash, MAX_POINTER_SIZE, PointerError, XetPointer};
 

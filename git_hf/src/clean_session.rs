@@ -22,6 +22,8 @@ use xet_runtime::core::XetContext;
 use xet_runtime::file_utils::SafeFileCreator;
 
 use crate::auth::resolve_credential;
+use crate::constants::GIT_HF_PROGRAM;
+use crate::hook::ensure_installed;
 use crate::staging::{StagedDedupSource, StagingClient};
 use crate::{GitHfError, Result};
 
@@ -159,6 +161,20 @@ impl CleanSession {
         let worktree = repo
             .worktree_dir()?
             .ok_or_else(|| GitHfError::NotSupported("Cleaning requires a worktree".into()))?;
+        // Staged data reaches the Hub only through the pre-push hook. A failure here must not block
+        // `git add`: without the hook, the server rejects pushes of unbacked pointers.
+        match ensure_installed(&worktree) {
+            Ok(outcome) => {
+                if let Some(notice) = outcome.foreign_hook_notice() {
+                    eprintln!("{GIT_HF_PROGRAM}: {notice}");
+                }
+            },
+            Err(error) => {
+                eprintln!(
+                    "{GIT_HF_PROGRAM}: could not install the pre-push hook; staged files will not upload: {error}"
+                )
+            },
+        }
         let base = repo.common_dir()?.join("xet").join("staging");
         std::fs::create_dir_all(&base)?;
         let scratch = tempfile::Builder::new().prefix("session-").tempdir_in(&base)?;
@@ -235,16 +251,16 @@ impl CleanSession {
 
 fn report_failure(marker: Result<PathBuf>, worktree: &std::path::Path, files: &[(MerkleHash, Vec<u8>)]) {
     eprintln!(
-        "git-hf: staging failed; these files in {} are staged as pointers without local data:",
+        "{GIT_HF_PROGRAM}: staging failed; these files in {} are staged as pointers without local data:",
         worktree.display()
     );
     for (_, path) in files {
         eprintln!("  {}", String::from_utf8_lossy(path));
     }
-    eprintln!("git-hf: after fixing the cause, run `git add --renormalize -- <paths>` in that worktree.");
+    eprintln!("{GIT_HF_PROGRAM}: after fixing the cause, run `git add --renormalize -- <paths>` in that worktree.");
     match marker {
-        Ok(marker) => eprintln!("git-hf: recorded in {}", marker.display()),
-        Err(error) => eprintln!("git-hf: failed to record the affected paths: {error}"),
+        Ok(marker) => eprintln!("{GIT_HF_PROGRAM}: recorded in {}", marker.display()),
+        Err(error) => eprintln!("{GIT_HF_PROGRAM}: failed to record the affected paths: {error}"),
     }
 }
 

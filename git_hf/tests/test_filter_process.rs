@@ -153,3 +153,48 @@ fn finalize_failure_is_reported_and_recoverable_per_worktree() -> Result<()> {
     assert!(staged);
     Ok(())
 }
+
+/// An existing hook is left in place, and a real `git push` reaches git-hf once that hook calls it
+/// with Git's arguments and stdin; uninstalling keeps the hook.
+#[cfg(unix)]
+#[test]
+#[serial(env_var_write_read)]
+fn git_push_runs_git_hf_from_an_existing_hook() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    use xet_runtime::utils::EnvVarGuard;
+
+    // The hook refers to `git-hf` on PATH, as a user installation would.
+    let binary = std::path::PathBuf::from(env!("CARGO_BIN_EXE_git-hf"));
+    let path = std::env::join_paths(
+        std::iter::once(binary.parent().unwrap().to_owned())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )?;
+    let _path = EnvVarGuard::set("PATH", path);
+
+    let repo = TestRepo::new("main")?;
+    let hooks = repo.path().join(".git/hooks");
+    fs::create_dir_all(&hooks)?;
+    let hook = "#!/bin/sh\ntee \"$(git rev-parse --git-dir)/hook-input\" | git-hf pre-push \"$@\"\n";
+    fs::write(hooks.join("pre-push"), hook)?;
+    fs::set_permissions(hooks.join("pre-push"), fs::Permissions::from_mode(0o755))?;
+    let (out, _) =
+        run_git_captured_with_input_and_output(repo.path(), "hf", ["install", "--local"])?.wait_with_output()?;
+    // The hook already calls git-hf, so there is nothing to report.
+    let out = String::from_utf8(out)?;
+    assert!(!out.contains("left unchanged"), "{out}");
+    assert_eq!(fs::read_to_string(hooks.join("pre-push"))?, hook);
+
+    let remote = tempfile::tempdir()?;
+    run_git_captured(remote.path(), "init", ["--bare", "-q"])?;
+    fs::write(repo.path().join("small"), b"hello\n")?;
+    run_git_captured(repo.path(), "add", ["."])?;
+    run_git_captured(repo.path(), "commit", ["-m", "small"])?;
+    run_git_captured(repo.path(), "push", [remote.path().to_str().unwrap(), "main"])?;
+    let input = fs::read_to_string(repo.path().join(".git/hook-input"))?;
+    assert!(input.starts_with("refs/heads/main "), "{input}");
+
+    run_git_captured(repo.path(), "hf", ["uninstall", "--local"])?;
+    assert_eq!(fs::read_to_string(hooks.join("pre-push"))?, hook);
+    Ok(())
+}
