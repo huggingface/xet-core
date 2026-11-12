@@ -35,10 +35,26 @@ such as a locked or unwritable config file that has a registration, are reported
 `git hf install --local` also installs the repository's `pre-push` hook, which will
 upload staged data when you push; `git hf uninstall --local` removes it. Because hooks
 belong to a repository, git-hf also installs the hook the first time it stores a file as
-a Xet pointer, so a global installation needs no extra step. An existing `pre-push` hook
-is kept and still runs first. On Windows, only an existing shell-script hook can be kept this
-way; with any other hook, git-hf reports an error and does not install its own. Neither command modifies attributes or diff/merge
-configuration.
+a Xet pointer, so a global installation needs no extra step. Neither command modifies
+attributes or diff/merge configuration.
+
+An existing `pre-push` hook is left unchanged, and git-hf prints its path. To upload
+staged data when you push, edit that file (usually `.git/hooks/pre-push`; run
+`git rev-parse --git-path hooks` to find the hooks directory) and add this line right
+after the `#!` line, before any other command:
+
+```sh
+git-hf pre-push "$@" || exit 1
+```
+
+git-hf reads the refs being pushed from the hook's standard input. If the rest of the
+hook also reads standard input, save it first and pass a copy to each:
+
+```sh
+input=$(cat)
+printf '%s\n' "$input" | git-hf pre-push "$@" || exit 1
+printf '%s\n' "$input" | the-rest-of-the-hook
+```
 
 ## Process filter and local staging
 

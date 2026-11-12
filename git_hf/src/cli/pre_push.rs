@@ -1,13 +1,12 @@
 use std::ffi::OsStr;
 use std::io::Read;
 
-use crate::{Result, hook};
+use crate::Result;
 
-/// Runs the chained hook, if any, with Git's arguments and stdin; a failure aborts the push.
-/// Uploading staged data is not implemented yet, so otherwise the push proceeds unchanged.
-pub(super) fn run(remote: &str, location: &OsStr) -> Result<()> {
+/// Reads Git's ref updates from stdin. Uploading staged data is not implemented yet, so the push
+/// proceeds unchanged.
+pub(super) fn run(_remote: &str, _location: &OsStr) -> Result<()> {
     let mut input = Vec::new();
     std::io::stdin().read_to_end(&mut input)?;
-    let wd = std::env::current_dir()?;
-    hook::run_chained(&wd, &[OsStr::new(remote), location], &input)
+    Ok(())
 }
