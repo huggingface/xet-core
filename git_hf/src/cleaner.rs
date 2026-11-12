@@ -24,15 +24,19 @@ impl<'a> SelectingFileCleaner<'a> {
         const _: () = assert!(BINARY_SAMPLE_SIZE > MAX_POINTER_SIZE);
         let mut prefix = Vec::new();
         input.take(BINARY_SAMPLE_SIZE as u64).read_to_end(&mut prefix)?;
+        let invalid = |source| GitHfError::InvalidPointer {
+            path: String::from_utf8_lossy(self.pathname).into_owned(),
+            source,
+        };
         let pointer = match XetPointer::parse(&prefix) {
             Ok(pointer) => pointer.map(|_| prefix.clone()),
             // Git's EOL conversion on checkout leaves CRLF in a pointer; undo it as Git's `crlf_to_git`
             // would, so the stored pointer is correct even where Git doesn't convert clean's output.
             Err(PointerError::InvalidEncoding) if prefix.windows(2).any(|w| w == b"\r\n") => {
                 let lf = crlf_to_lf(&prefix);
-                XetPointer::parse(&lf)?.map(|_| lf)
+                XetPointer::parse(&lf).map_err(invalid)?.map(|_| lf)
             },
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(invalid(e)),
         };
         if let Some(pointer) = pointer {
             return Ok(pointer);

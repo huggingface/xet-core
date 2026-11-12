@@ -421,7 +421,13 @@ mod tests {
         assert_eq!(cleaner.clean(&mut crlf.as_bytes())?, pointer.as_bytes());
         // CRLF is undone, but the pointer must still be valid.
         let broken = crlf.replace("size 42", "size x");
-        assert!(matches!(cleaner.clean(&mut broken.as_bytes()), Err(GitHfError::Pointer(PointerError::InvalidSize))));
+        assert!(matches!(
+            cleaner.clean(&mut broken.as_bytes()),
+            Err(GitHfError::InvalidPointer {
+                source: PointerError::InvalidSize,
+                ..
+            })
+        ));
         assert!(cleaner.state.lock().unwrap().is_none());
         Ok(())
     }

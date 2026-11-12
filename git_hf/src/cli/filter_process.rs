@@ -167,7 +167,15 @@ mod tests {
         request(&mut wire, b"version https://hf.co/spec/xet/v1\n");
         request(&mut wire, &vec![1; 100001]);
         let mut output = Vec::new();
-        assert!(matches!(serve(&mut wire.as_slice(), &mut output), Err(GitHfError::Pointer(_))));
+        let error = serve(&mut wire.as_slice(), &mut output).unwrap_err();
+        assert!(matches!(error, GitHfError::InvalidPointer { .. }), "{error:?}");
+        // The message names the file and says why it can't be stored.
+        assert!(
+            error
+                .to_string()
+                .starts_with("file: this file looks like a Xet pointer but is not valid"),
+            "{error}"
+        );
         let mut output = output.as_slice();
         headers(&mut output)?;
         headers(&mut output)?;
