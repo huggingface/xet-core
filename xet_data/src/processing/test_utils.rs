@@ -361,7 +361,7 @@ impl HydrateDehydrateTest {
             let out_filename = self.dest_dir.join(entry.file_name());
 
             let xf: XetFileInfo = serde_json::from_reader(File::open(entry.path()).unwrap()).unwrap();
-            let (_id, _) = session.download_file(&xf, &out_filename).await.unwrap();
+            let (_id, _) = session.download_file(&xf, &out_filename, false).await.unwrap();
         }
     }
 

@@ -85,7 +85,7 @@ fn finish_blocking_emits_a_download_document() {
         .with_endpoint(endpoint)
         .build_blocking()
         .unwrap();
-    group.download_file_to_path_blocking(file_info, dest.clone()).unwrap();
+    group.download_file_to_path_blocking(file_info, dest.clone(), false).unwrap();
     group.finish_blocking().unwrap();
 
     assert_eq!(fs::read(&dest).unwrap(), data, "the download itself must still work");
@@ -121,7 +121,7 @@ fn finishing_then_dropping_emits_one_document() {
             .build_blocking()
             .unwrap();
         group
-            .download_file_to_path_blocking(file_info, temp.path().join("g.out"))
+            .download_file_to_path_blocking(file_info, temp.path().join("g.out"), false)
             .unwrap();
         group.finish_blocking().unwrap();
     }

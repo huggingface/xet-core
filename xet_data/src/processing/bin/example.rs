@@ -137,7 +137,7 @@ async fn smudge(_name: Arc<str>, mut reader: impl Read, output_path: PathBuf) ->
     let config = TranslatorConfig::local_config(&runtime, cas_path)?;
     let session = xet_data::processing::FileDownloadSession::new(config.into(), None).await?;
 
-    let (_id, _n_bytes) = session.download_file(&xet_file, &output_path).await?;
+    let (_id, _n_bytes) = session.download_file(&xet_file, &output_path, false).await?;
 
     Ok(())
 }
