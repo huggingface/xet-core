@@ -5,10 +5,9 @@ use clap::Args;
 use xet_client::cas_client::RemoteClient;
 use xet_client::cas_client::auth::TokenRefresher;
 use xet_client::cas_types::{FileRange, QueryReconstructionResponse};
-use xet_client::hub_client::{HubClient, Operation};
+use xet_client::hub_client::{HubClient, HubClientTokenRefresher, Operation};
 use xet_core_structures::merklehash::MerkleHash;
 use xet_data::processing::data_client::default_config;
-use xet_data::processing::migration_tool::hub_client_token_refresher::HubClientTokenRefresher;
 use xet_runtime::core::XetContext;
 
 use super::endpoint::EndpointConfig;
