@@ -290,6 +290,23 @@ mod tests {
     }
     use crate::selection::{BINARY_LIMIT, TEXT_LIMIT};
 
+    // The Hub judges the first 512 bytes, so a binary byte past the pointer-sized prefix counts.
+    #[test]
+    #[serial(env_var_write_read)]
+    fn binary_detection_uses_the_full_sample() -> anyhow::Result<()> {
+        let repo = TestRepo::new("main")?;
+        let _cwd = CwdGuard::set(repo.path())?;
+        let session = CleanSession::new()?;
+        let mut data = vec![b'a'; BINARY_LIMIT + 1];
+        data[300] = 0;
+        let out = session.clean(&mut data.as_slice())?;
+        assert!(XetPointer::parse(&out)?.is_some());
+        data[300] = b'a';
+        assert_eq!(session.clean(&mut data.as_slice())?, data);
+        session.finish()?;
+        Ok(())
+    }
+
     #[test]
     #[serial(env_var_write_read)]
     fn concurrent_file_cleaners_share_aggregation() -> anyhow::Result<()> {

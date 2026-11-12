@@ -5,7 +5,7 @@ use xet_core_structures::merklehash::MerkleHash;
 use xet_data::processing::Sha256Policy;
 
 use crate::clean_session::CleanSession;
-use crate::selection::{BINARY_LIMIT, FILE_LIMIT, TEXT_LIMIT, is_binary};
+use crate::selection::{BINARY_LIMIT, BINARY_SAMPLE_SIZE, FILE_LIMIT, TEXT_LIMIT, is_binary};
 use crate::{GitHfError, HexHash, MAX_POINTER_SIZE, Result, XetPointer};
 
 pub(crate) struct SelectingFileCleaner<'a> {
@@ -20,8 +20,10 @@ impl<'a> SelectingFileCleaner<'a> {
     }
 
     pub(crate) fn clean(self, input: &mut impl Read) -> Result<Vec<u8>> {
+        // The binary sample covers any pointer; `parse` treats input over MAX_POINTER_SIZE as data.
+        const _: () = assert!(BINARY_SAMPLE_SIZE > MAX_POINTER_SIZE);
         let mut prefix = Vec::new();
-        input.take((MAX_POINTER_SIZE + 1) as u64).read_to_end(&mut prefix)?;
+        input.take(BINARY_SAMPLE_SIZE as u64).read_to_end(&mut prefix)?;
         if XetPointer::parse(&prefix)?.is_some() {
             return Ok(prefix);
         }

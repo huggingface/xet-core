@@ -13,6 +13,8 @@ pub(crate) const TEXT_LIMIT: usize = 10_485_760;
 pub(crate) const BINARY_LIMIT: usize = 100_000;
 /// The largest file the Hub accepts with Xet storage (decimal 500 GB); equality is allowed.
 pub(crate) const FILE_LIMIT: u64 = 500_000_000_000;
+/// How many leading bytes [`is_binary`] judges.
+pub(crate) const BINARY_SAMPLE_SIZE: usize = 512;
 
 /// Whether `data` looks binary, judging only its first 512 bytes.
 ///
@@ -31,7 +33,7 @@ pub(crate) const FILE_LIMIT: u64 = 500_000_000_000;
 ///    than 10% suspicious bytes means binary.
 pub(crate) fn is_binary(data: &[u8]) -> bool {
     // Rule 1 needs no code: an empty sample has no suspicious bytes and returns false at the end.
-    let data = &data[..data.len().min(512)];
+    let data = &data[..data.len().min(BINARY_SAMPLE_SIZE)];
     // Rule 2.
     for bom in [
         &b"\xef\xbb\xbf"[..],
