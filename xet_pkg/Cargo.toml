@@ -97,6 +97,7 @@ tokio_with_wasm = { workspace = true, features = ["rt", "sync"] }
 
 [dev-dependencies]
 futures = { workspace = true }
+rand = { workspace = true }
 serial_test = { workspace = true }
 smol = { workspace = true }
 tempfile = { workspace = true }
@@ -108,3 +109,4 @@ tokio = { workspace = true, features = [
 ] }
 tracing-subscriber = { workspace = true }
 wiremock = { workspace = true }
+xet-runtime = { path = "../xet_runtime", features = ["test-utils"] }
