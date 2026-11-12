@@ -371,7 +371,15 @@ impl FileDownloadSession {
         } else {
             None
         };
-        let range = offset.map(|offset| FileRange::from_offset(offset));
+        let range = offset.map(FileRange::from_offset);
+
+        if let (Some(offset), Some(file_size)) = (offset, file_info.file_size())
+            && offset > file_size
+        {
+            return Err(DataError::ResumeError(
+                "invalid local file provided for resume: local file is not a valid prefix of remote".into(),
+            ));
+        }
 
         let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
         let n_bytes = reconstructor.reconstruct_to_file(write_path, offset, !resume).await?;
