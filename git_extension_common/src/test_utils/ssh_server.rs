@@ -38,7 +38,7 @@ use crate::auth::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
 ///
 /// Example (async context):
 /// ```ignore
-///
+/// 
 /// // Start server on any free port
 /// let (port, server_task) = start_local_ssh_server(None).await?;
 /// println!("Test SSH server listening on port {}", port);
