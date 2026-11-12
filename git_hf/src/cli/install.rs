@@ -1,6 +1,7 @@
 use git_extension_common::process_wrapping::run_git_captured;
 
-use crate::hook::{InstallOutcome, ensure_installed};
+use crate::constants::GIT_HF_PROGRAM;
+use crate::hook::ensure_installed;
 use crate::utils::git_get_all_config_values;
 use crate::{GitHfError, Result};
 
@@ -63,9 +64,9 @@ fn install_impl(location: ConfigLocation) -> Result<()> {
 
     // Hooks are per repository. The filter also installs the hook when it first stages a file.
     if matches!(location, ConfigLocation::Local)
-        && let InstallOutcome::Chained(path) = ensure_installed(&wd)?
+        && let Some(notice) = ensure_installed(&wd)?.foreign_hook_notice()
     {
-        println!("Existing pre-push hook preserved; git-hf runs it first from {}", path.display());
+        println!("{GIT_HF_PROGRAM}: {notice}");
     }
 
     Ok(())
