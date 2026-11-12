@@ -9,6 +9,7 @@ use super::adaptive_concurrency::ConnectionPermit;
 use super::progress_tracked_streams::ProgressCallback;
 #[cfg(not(target_family = "wasm"))]
 use super::telemetry::TransferTelemetry;
+use super::xorb_block_data::XorbBlockData;
 use crate::cas_types::{
     BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HttpRange, QueryReconstructionResponseV2,
     ShardUploadEvent,
@@ -65,15 +66,20 @@ pub trait Client: Send + Sync {
 
     async fn acquire_download_permit(&self) -> Result<ConnectionPermit>;
 
+    /// Downloads one xorb block and appends its decompressed chunks to `output`, in order, as each is decoded.
+    ///
+    /// Readers of `output` can consume the chunks while the download is still running. A chunk is appended at most
+    /// once: if a request is retried after some chunks were appended, those chunks are skipped in the retried
+    /// response. The caller marks `output` finished or failed once this returns.
+    ///
     /// Optional progress callback receives (delta, completed, total) in transfer bytes.
-    /// When [uncompressed_size_if_known] is [Some], the returned Bytes must have len() equal to that value.
     async fn get_file_term_data(
         &self,
         url_info: Box<dyn URLProvider>,
         download_permit: ConnectionPermit,
         progress_callback: Option<ProgressCallback>,
-        uncompressed_size_if_known: Option<usize>,
-    ) -> Result<(Bytes, Vec<u32>)>;
+        output: Arc<XorbBlockData>,
+    ) -> Result<()>;
 
     async fn query_for_global_dedup_shard(&self, prefix: &str, chunk_hash: &MerkleHash) -> Result<Option<Bytes>>;
 

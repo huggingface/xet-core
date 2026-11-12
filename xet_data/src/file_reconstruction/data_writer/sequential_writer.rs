@@ -5,15 +5,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::sync::oneshot;
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinHandle;
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as tokio;
 use xet_client::cas_types::FileRange;
 use xet_runtime::core::XetContext;
 use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphorePermit;
 
-use super::super::data_writer::{DataFuture, DataWriter};
+use super::super::data_writer::DataWriter;
+use super::super::reconstruction_terms::TermReader;
 use super::super::run_state::RunState;
 use super::super::{FileReconstructionError, Result};
 use crate::progress_tracking::ItemProgressUpdater;
@@ -29,12 +29,12 @@ use crate::progress_tracking::ItemProgressUpdater;
 // 64 MiB, this effectively limits total number of bytes in iov to 64 MiB * 24 = 1.5 GiB.
 const WRITEV_MAX_SLICE: usize = 24;
 
-/// Items sent through the sequential writer queue. Each item is either a data
-/// chunk (with a oneshot receiver that resolves to the actual bytes) or a
+/// Items sent through the sequential writer queue. Each item is either a term
+/// (a reader of its bytes, which its xorb block's download task fills) or a
 /// finish marker indicating no more items will follow.
 pub(crate) enum SequentialRetrievalItem {
     Data {
-        receiver: oneshot::Receiver<Bytes>,
+        reader: TermReader,
         permit: Option<AdjustableSemaphorePermit>,
     },
     Finish,
@@ -97,34 +97,23 @@ impl SyncWriterThread {
 
         // Process the pending item if we have one.
         match self.pending.take() {
-            Some(SequentialRetrievalItem::Data { mut receiver, permit }) => {
-                if should_block {
-                    let data = match receiver.blocking_recv() {
-                        Ok(data) => data,
-                        Err(_) => {
-                            self.run_state.check_error()?;
-                            return Err(FileReconstructionError::InternalWriterError(
-                                "Data sender was dropped before sending data.".to_string(),
-                            ));
-                        },
-                    };
-                    Ok(Some((data, permit)))
+            Some(SequentialRetrievalItem::Data { mut reader, permit }) => {
+                let data = if should_block {
+                    reader.read_rest_blocking().map(Some)
                 } else {
-                    // Non-blocking: try to receive data.
-                    match receiver.try_recv() {
-                        Ok(data) => Ok(Some((data, permit))),
-                        Err(oneshot::error::TryRecvError::Empty) => {
-                            // Data not ready - put the item back in pending.
-                            self.pending = Some(SequentialRetrievalItem::Data { receiver, permit });
-                            Ok(None)
-                        },
-                        Err(oneshot::error::TryRecvError::Closed) => {
-                            self.run_state.check_error()?;
-                            Err(FileReconstructionError::InternalWriterError(
-                                "Data sender was dropped before sending data.".to_string(),
-                            ))
-                        },
-                    }
+                    reader.try_read_rest()
+                };
+                match data {
+                    Ok(Some(data)) => Ok(Some((data, permit))),
+                    Ok(None) => {
+                        // Data not ready - put the item back in pending.
+                        self.pending = Some(SequentialRetrievalItem::Data { reader, permit });
+                        Ok(None)
+                    },
+                    Err(e) => {
+                        self.run_state.check_error()?;
+                        Err(e)
+                    },
                 }
             },
             Some(SequentialRetrievalItem::Finish) => {
@@ -225,16 +214,17 @@ impl SyncWriterThread {
     }
 }
 
-/// Writes data sequentially to an output stream from async data futures.
-/// Spawns async tasks to resolve futures and a background thread to perform
-/// blocking writes, allowing out-of-order future resolution with in-order writes.
+/// Writes term data sequentially to an output stream.
+///
+/// Terms are queued in order as readers of their xorb blocks; the blocks download concurrently in their own
+/// tasks, and a background thread writes each term once all of its bytes are ready. In streaming mode the queue
+/// is handed to a [`DownloadStream`](super::DownloadStream) instead of a thread.
 pub struct SequentialWriter {
     sender: UnboundedSender<SequentialRetrievalItem>,
     next_position: u64,
     background_handle: Option<JoinHandle<()>>,
     run_state: Arc<RunState>,
     bytes_written: Arc<AtomicU64>,
-    active_tasks: JoinSet<Result<()>>,
     finished: bool,
 }
 
@@ -249,20 +239,14 @@ impl Drop for SequentialWriter {
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
 impl DataWriter for SequentialWriter {
-    /// Sets the source for the next block of data; this is a future that
-    /// can be executing in the background.  This must be the next one sequentially,
-    /// otherwise it will error out.
+    /// Queues the next term. It must start where the previous term ended, otherwise this errors out.
     async fn set_next_term_data_source(
         &mut self,
         byte_range: FileRange,
         permit: Option<AdjustableSemaphorePermit>,
-        data_future: DataFuture,
+        reader: TermReader,
     ) -> Result<()> {
         self.run_state.check_error()?;
-
-        while let Some(result) = self.active_tasks.try_join_next() {
-            result.map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
-        }
 
         if self.finished {
             return Err(FileReconstructionError::InternalWriterError("Writer has already finished".to_string()));
@@ -276,53 +260,24 @@ impl DataWriter for SequentialWriter {
         }
 
         let expected_size = byte_range.end - byte_range.start;
+        if reader.len() != expected_size {
+            return Err(FileReconstructionError::InternalWriterError(format!(
+                "Data size mismatch: expected {} bytes, got {} bytes",
+                expected_size,
+                reader.len()
+            )));
+        }
         self.next_position = byte_range.end;
 
-        let (sender, receiver) = oneshot::channel();
-
-        if self.sender.send(SequentialRetrievalItem::Data { receiver, permit }).is_err() {
+        if self.sender.send(SequentialRetrievalItem::Data { reader, permit }).is_err() {
             self.run_state.check_error()?;
             return Err(FileReconstructionError::InternalWriterError("Background writer channel closed".to_string()));
         }
 
-        let run_state = self.run_state.clone();
-        let task = async move {
-            let result = async {
-                run_state.check_error()?;
-
-                let data = data_future.await?;
-
-                if data.len() as u64 != expected_size {
-                    return Err(FileReconstructionError::InternalWriterError(format!(
-                        "Data size mismatch: expected {} bytes, got {} bytes",
-                        expected_size,
-                        data.len()
-                    )));
-                }
-
-                if sender.send(data).is_err() {
-                    run_state.check_error()?;
-                    return Err(FileReconstructionError::InternalWriterError(
-                        "Failed to send data: receiver dropped".to_string(),
-                    ));
-                }
-
-                Ok(())
-            }
-            .await;
-
-            if let Err(ref e) = result {
-                run_state.set_error(e.clone());
-            }
-            result
-        };
-
-        self.active_tasks.spawn(task);
-
         Ok(())
     }
 
-    /// Wait for the background writer to finish and all tasks to complete.
+    /// Wait for the background writer to finish.
     /// Returns the number of bytes written.
     async fn finish(mut self: Box<Self>) -> Result<u64> {
         self.run_state.check_error()?;
@@ -339,10 +294,6 @@ impl DataWriter for SequentialWriter {
         }
 
         let expected_bytes = self.next_position;
-
-        while let Some(result) = self.active_tasks.join_next().await {
-            result.map_err(|e| FileReconstructionError::InternalError(format!("Task join error: {e}")))??;
-        }
 
         match self.background_handle.take() {
             Some(handle) => {
@@ -388,7 +339,6 @@ impl SequentialWriter {
             background_handle: None,
             run_state,
             bytes_written: Arc::new(AtomicU64::new(0)),
-            active_tasks: JoinSet::new(),
             finished: false,
         };
 
@@ -436,7 +386,6 @@ impl SequentialWriter {
             background_handle: Some(handle),
             run_state,
             bytes_written,
-            active_tasks: JoinSet::new(),
             finished: false,
         })
     }
@@ -450,6 +399,7 @@ mod tests {
     use xet_runtime::core::XetContext;
     use xet_runtime::utils::adjustable_semaphore::AdjustableSemaphore;
 
+    use super::super::super::reconstruction_terms::test_utils::{delayed_reader, failing_reader, ready_reader};
     use super::*;
 
     fn test_context() -> XetContext {
@@ -606,8 +556,8 @@ mod tests {
         }
     }
 
-    fn immediate_future(data: Bytes) -> DataFuture {
-        Box::pin(async move { Ok(data) })
+    fn immediate_future(data: Bytes) -> TermReader {
+        ready_reader(data)
     }
 
     #[tokio::test]
@@ -653,16 +603,10 @@ mod tests {
             RunState::new_for_test(),
         );
 
-        // Create futures that resolve with delays
-        let f0: DataFuture = Box::pin(async {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            Ok(Bytes::from("Hello"))
-        });
-        let f1: DataFuture = Box::pin(async {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            Ok(Bytes::from(" "))
-        });
-        let f2: DataFuture = Box::pin(async { Ok(Bytes::from("World")) });
+        // Create readers whose data arrives with delays
+        let f0 = delayed_reader("Hello", Duration::from_millis(50));
+        let f1 = delayed_reader(" ", Duration::from_millis(10));
+        let f2 = ready_reader("World");
 
         writer.set_next_term_data_source(FileRange::new(0, 5), None, f0).await.unwrap();
         writer.set_next_term_data_source(FileRange::new(5, 6), None, f1).await.unwrap();
@@ -679,13 +623,10 @@ mod tests {
         let buffer = std::io::Cursor::new(Vec::new());
         let mut writer = SequentialWriter::new(&test_context(), Box::new(buffer), false, RunState::new_for_test());
 
-        writer
+        let result = writer
             .set_next_term_data_source(FileRange::new(0, 10), None, immediate_future(Bytes::from("Hello")))
-            .await
-            .unwrap();
-
-        let result = writer.finish().await;
-        assert!(result.is_err());
+            .await;
+        assert!(matches!(result, Err(FileReconstructionError::InternalWriterError(_))));
     }
 
     #[tokio::test]
@@ -749,8 +690,7 @@ mod tests {
             RunState::new_for_test(),
         );
 
-        let failing_future: DataFuture =
-            Box::pin(async { Err(FileReconstructionError::InternalError("Simulated future error".to_string())) });
+        let failing_future = failing_reader(5, "Simulated download error");
 
         writer
             .set_next_term_data_source(FileRange::new(0, 5), None, failing_future)
@@ -766,13 +706,10 @@ mod tests {
         let buffer = std::io::Cursor::new(Vec::new());
         let mut writer = SequentialWriter::new(&test_context(), Box::new(buffer), false, RunState::new_for_test());
 
-        writer
+        let result = writer
             .set_next_term_data_source(FileRange::new(0, 10), None, immediate_future(Bytes::from("Hi")))
-            .await
-            .unwrap();
-
-        let result = writer.finish().await;
-        assert!(result.is_err());
+            .await;
+        assert!(matches!(result, Err(FileReconstructionError::InternalWriterError(_))));
     }
 
     #[tokio::test]
@@ -780,13 +717,10 @@ mod tests {
         let buffer = std::io::Cursor::new(Vec::new());
         let mut writer = SequentialWriter::new(&test_context(), Box::new(buffer), false, RunState::new_for_test());
 
-        writer
+        let result = writer
             .set_next_term_data_source(FileRange::new(0, 2), None, immediate_future(Bytes::from("Hello World")))
-            .await
-            .unwrap();
-
-        let result = writer.finish().await;
-        assert!(result.is_err());
+            .await;
+        assert!(matches!(result, Err(FileReconstructionError::InternalWriterError(_))));
     }
 
     #[tokio::test]
@@ -957,16 +891,10 @@ mod tests {
 
         let mut writer = SequentialWriter::new(&test_context(), Box::new(test_writer), true, RunState::new_for_test());
 
-        // Create futures that resolve with different delays
-        let f0: DataFuture = Box::pin(async {
-            tokio::time::sleep(Duration::from_millis(30)).await;
-            Ok(Bytes::from("A"))
-        });
-        let f1: DataFuture = Box::pin(async {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            Ok(Bytes::from("B"))
-        });
-        let f2: DataFuture = Box::pin(async { Ok(Bytes::from("C")) });
+        // Create readers whose data arrives with different delays
+        let f0 = delayed_reader("A", Duration::from_millis(30));
+        let f1 = delayed_reader("B", Duration::from_millis(10));
+        let f2 = ready_reader("C");
 
         writer.set_next_term_data_source(FileRange::new(0, 1), None, f0).await.unwrap();
         writer.set_next_term_data_source(FileRange::new(1, 2), None, f1).await.unwrap();

@@ -2,11 +2,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
-use bytes::Bytes;
-use tokio::sync::OnceCell;
-#[cfg(target_family = "wasm")]
-use tokio_with_wasm::alias as tokio;
-use xet_client::cas_client::Client;
+use xet_client::cas_client::{BlockByteRange, Client};
 use xet_client::cas_types::{ChunkRange, FileRange, HttpRange};
 use xet_client::chunk_cache::ChunkCache;
 use xet_core_structures::merklehash::MerkleHash;
@@ -14,10 +10,11 @@ use xet_runtime::core::XetContext;
 use xet_runtime::utils::UniqueId;
 
 use super::super::FileReconstructionError;
-use super::super::data_writer::DataFuture;
 use super::super::error::Result;
+use super::super::run_state::RunState;
 use super::retrieval_urls::TermBlockRetrievalURLs;
-use super::xorb_block::{XorbBlock, XorbBlockData, XorbReference};
+use super::term_reader::TermReader;
+use super::xorb_block::{XorbBlock, XorbReference};
 use crate::progress_tracking::ItemProgressUpdater;
 /// A single term in a file reconstruction, representing a contiguous byte range
 /// in the output file that maps to a chunk range within a xorb block.
@@ -43,47 +40,42 @@ pub struct FileTerm {
 }
 
 impl FileTerm {
-    pub fn extract_bytes(&self, xorb_block_data: &XorbBlockData) -> Bytes {
-        let (_, start_byte_offset) = xorb_block_data.chunk_offsets[self.xorb_block_start_index];
-        let start_byte_offset = start_byte_offset + self.offset_into_first_range as usize;
-        let expected_size = (self.byte_range.end - self.byte_range.start) as usize;
-        let end_byte_offset = start_byte_offset + expected_size;
-
-        xorb_block_data.data.slice(start_byte_offset..end_byte_offset)
-    }
-
-    /// Get a future that will retrieve and extract the data bytes for this file term.
+    /// Starts downloading this term's xorb block, unless another term on the block already did, and returns a
+    /// reader of the term's bytes.
     ///
-    /// If the xorb data is already cached, returns a future that immediately resolves (no progress
-    /// report, since the block was already reported by the term that triggered the download).
-    /// Otherwise, spawns a task that calls retrieve_data, which uses single-flight to ensure
-    /// only one download per xorb block (other callers wait without acquiring CAS permits).
-    pub async fn get_data_task(
+    /// Waits for a download permit if this term starts the block's download; calling this for terms in file
+    /// order makes blocks download in file order. The download runs in its own task and fills the block's shared
+    /// data as chunks are decompressed, so the reader can return the term's first bytes before the rest of the
+    /// block has arrived.
+    pub(crate) async fn start_read(
         &self,
         ctx: XetContext,
         client: Arc<dyn Client>,
         progress_updater: Option<Arc<ItemProgressUpdater>>,
         chunk_cache: Option<Arc<dyn ChunkCache>>,
-    ) -> Result<DataFuture> {
-        // Fast path: data already cached, no need to spawn a task.
-        if let Some(xorb_block_data) = self.xorb_block.data.get() {
-            let bytes = self.extract_bytes(xorb_block_data);
-            return Ok(Box::pin(async move { Ok(bytes) }));
-        }
+        run_state: Arc<RunState>,
+    ) -> Result<TermReader> {
+        self.xorb_block
+            .start_fetch(ctx, client, self.url_info.clone(), progress_updater, chunk_cache, run_state)
+            .await?;
 
-        let file_term = self.clone();
-        let url_info = self.url_info.clone();
-        let xorb_block = self.xorb_block.clone();
-
-        let task = tokio::task::spawn(async move {
-            let xorb_block_data = xorb_block
-                .retrieve_data(ctx, client, url_info, progress_updater, chunk_cache)
-                .await?;
-            Ok(file_term.extract_bytes(&xorb_block_data))
-        });
-
-        Ok(Box::pin(async move { task.await? }))
+        Ok(TermReader::new(
+            self.xorb_block.data.clone(),
+            BlockByteRange {
+                first_chunk: self.xorb_block_start_index,
+                offset_into_first_chunk: self.offset_into_first_range as usize,
+                len: (self.byte_range.end - self.byte_range.start) as usize,
+            },
+        ))
     }
+}
+
+/// A xorb block being collected from the reconstruction terms, before its references are complete and its data
+/// buffer can be sized.
+struct PendingXorbBlock {
+    xorb_hash: MerkleHash,
+    chunk_ranges: Vec<ChunkRange>,
+    references: Vec<XorbReference>,
 }
 
 /// Intermediate data for a single file term, collected during the first pass of
@@ -134,7 +126,7 @@ pub async fn retrieve_file_term_block(
     // Parallel vectors indexed by xorb_block_index:
     // - xorb_blocks: the block metadata (hash, chunk ranges, references)
     // - xorb_block_retrieval_urls: the download URL and byte ranges for each block
-    let mut xorb_blocks: Vec<XorbBlock> = Vec::new();
+    let mut xorb_blocks: Vec<PendingXorbBlock> = Vec::new();
     let mut xorb_block_retrieval_urls = Vec::<(String, Vec<HttpRange>)>::new();
 
     // Dedup map: (xorb_hash, first_range_chunk_start) -> xorb_block_index.
@@ -185,13 +177,10 @@ pub async fn retrieve_file_term_block(
                             let chunk_ranges: Vec<ChunkRange> = fetch_entry.ranges.iter().map(|r| r.chunks).collect();
                             let http_ranges: Vec<HttpRange> = fetch_entry.ranges.iter().map(|r| r.bytes).collect();
 
-                            xorb_blocks.push(XorbBlock {
+                            xorb_blocks.push(PendingXorbBlock {
                                 xorb_hash,
                                 chunk_ranges,
-                                xorb_block_index: new_index,
                                 references: vec![],
-                                uncompressed_size_if_known: None,
-                                data: OnceCell::new(),
                             });
 
                             xorb_block_retrieval_urls.push((fetch_entry.url.clone(), http_ranges));
@@ -210,13 +199,10 @@ pub async fn retrieve_file_term_block(
                                 Entry::Vacant(entry) => {
                                     let new_index = xorb_blocks.len();
 
-                                    xorb_blocks.push(XorbBlock {
+                                    xorb_blocks.push(PendingXorbBlock {
                                         xorb_hash,
                                         chunk_ranges: vec![range.chunks],
-                                        xorb_block_index: new_index,
                                         references: vec![],
-                                        uncompressed_size_if_known: None,
-                                        data: OnceCell::new(),
                                     });
 
                                     xorb_block_retrieval_urls.push((fetch_entry.url.clone(), vec![range.bytes]));
@@ -292,14 +278,6 @@ pub async fn retrieve_file_term_block(
         cur_file_byte_offset += term_byte_size;
     }
 
-    // Sort each block's references by chunk start so that determine_size_if_possible
-    // can use its forward-chaining DP to check coverage.
-    for block in &mut xorb_blocks {
-        block.references.sort_by_key(|r| r.term_chunks.start);
-        block.uncompressed_size_if_known =
-            XorbBlock::determine_size_if_possible(&block.chunk_ranges, &block.references);
-    }
-
     // The last term in the reconstruction may extend beyond the requested range
     // (e.g. when the query ends mid-chunk). Trim it to the query boundary.
     if cur_file_byte_offset > query_file_byte_range.end {
@@ -333,7 +311,14 @@ pub async fn retrieve_file_term_block(
 
     // Second pass: convert the intermediate FileTermEntry data into final FileTerm
     // structs, now that we can wrap xorb blocks in Arc and share the url_info.
-    let xorb_blocks_arc: Vec<Arc<XorbBlock>> = xorb_blocks.into_iter().map(Arc::new).collect();
+    // Each block's data buffer is sized from all of its references, so blocks are built only now.
+    let xorb_blocks_arc: Vec<Arc<XorbBlock>> = xorb_blocks
+        .into_iter()
+        .enumerate()
+        .map(|(index, block)| {
+            XorbBlock::new(block.xorb_hash, block.chunk_ranges, index, block.references).map(Arc::new)
+        })
+        .collect::<Result<_>>()?;
 
     let file_terms: Vec<FileTerm> = file_term_data
         .into_iter()
@@ -485,12 +470,15 @@ mod tests {
             // Verify all xorb blocks referenced have valid hashes.
             assert!(file_contents.xorbs.contains_key(&file_term.xorb_block.xorb_hash));
 
-            // Get the data task and await it.
-            let data_future = file_term
-                .get_data_task(ctx.clone(), dyn_client.clone(), None, None)
+            // Read the term's data in full.
+            let mut reader = file_term
+                .start_read(ctx.clone(), dyn_client.clone(), None, None, RunState::new_for_test())
                 .await
                 .unwrap();
-            let data = data_future.await.unwrap();
+            let mut data = Vec::new();
+            while let Some(piece) = reader.read_next().await.unwrap() {
+                data.extend_from_slice(&piece);
+            }
 
             // Verify the data size matches the byte range.
             let expected_size = (file_term.byte_range.end - file_term.byte_range.start) as usize;

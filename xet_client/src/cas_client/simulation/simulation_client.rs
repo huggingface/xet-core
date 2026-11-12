@@ -201,10 +201,10 @@ impl Client for RemoteSimulationClient {
         url_info: Box<dyn super::super::interface::URLProvider>,
         download_permit: ConnectionPermit,
         progress_callback: Option<ProgressCallback>,
-        uncompressed_size_if_known: Option<usize>,
-    ) -> Result<(Bytes, Vec<u32>)> {
+        output: std::sync::Arc<crate::cas_client::XorbBlockData>,
+    ) -> Result<()> {
         self.inner
-            .get_file_term_data(url_info, download_permit, progress_callback, uncompressed_size_if_known)
+            .get_file_term_data(url_info, download_permit, progress_callback, output)
             .await
     }
 
