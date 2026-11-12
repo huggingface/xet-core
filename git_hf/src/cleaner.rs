@@ -6,7 +6,7 @@ use xet_data::processing::Sha256Policy;
 
 use crate::clean_session::CleanSession;
 use crate::selection::{BINARY_LIMIT, BINARY_SAMPLE_SIZE, FILE_LIMIT, TEXT_LIMIT, is_binary};
-use crate::{GitHfError, HexHash, MAX_POINTER_SIZE, Result, XetPointer};
+use crate::{GitHfError, HexHash, MAX_POINTER_SIZE, PointerError, Result, XetPointer};
 
 pub(crate) struct SelectingFileCleaner<'a> {
     session: &'a CleanSession,
@@ -24,8 +24,18 @@ impl<'a> SelectingFileCleaner<'a> {
         const _: () = assert!(BINARY_SAMPLE_SIZE > MAX_POINTER_SIZE);
         let mut prefix = Vec::new();
         input.take(BINARY_SAMPLE_SIZE as u64).read_to_end(&mut prefix)?;
-        if XetPointer::parse(&prefix)?.is_some() {
-            return Ok(prefix);
+        let pointer = match XetPointer::parse(&prefix) {
+            Ok(pointer) => pointer.map(|_| prefix.clone()),
+            // Git's EOL conversion on checkout leaves CRLF in a pointer; undo it as Git's `crlf_to_git`
+            // would, so the stored pointer is correct even where Git doesn't convert clean's output.
+            Err(PointerError::InvalidEncoding) if prefix.windows(2).any(|w| w == b"\r\n") => {
+                let lf = crlf_to_lf(&prefix);
+                XetPointer::parse(&lf)?.map(|_| lf)
+            },
+            Err(e) => return Err(e.into()),
+        };
+        if let Some(pointer) = pointer {
+            return Ok(pointer);
         }
         let threshold = if is_binary(&prefix) { BINARY_LIMIT } else { TEXT_LIMIT };
         let remaining = threshold + 1 - prefix.len();
@@ -60,5 +70,26 @@ impl<'a> SelectingFileCleaner<'a> {
             .ok_or_else(|| GitHfError::Internal(format!("file hash {} isn't a pointer hash", info.hash)))?;
         state.record_file(hash, self.pathname)?;
         Ok(XetPointer::new(pointer_hash, size).to_string().into_bytes())
+    }
+}
+
+/// Replaces each CRLF pair with LF, keeping lone CRs, like Git's `crlf_to_git`.
+fn crlf_to_lf(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    for (i, &byte) in data.iter().enumerate() {
+        if byte != b'\r' || data.get(i + 1) != Some(&b'\n') {
+            out.push(byte);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crlf_to_lf_keeps_lone_carriage_returns() {
+        assert_eq!(crlf_to_lf(b"a\r\nb\rc\r\r\n\r"), b"a\nb\rc\r\n\r");
     }
 }

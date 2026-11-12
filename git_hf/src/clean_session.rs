@@ -282,7 +282,7 @@ mod tests {
     use xet_runtime::utils::CwdGuard;
 
     use super::*;
-    use crate::{HexHash, XetPointer};
+    use crate::{GitHfError, HexHash, PointerError, XetPointer};
 
     // The file hash a clean output's pointer names.
     fn pointer_hash(pointer: &[u8]) -> anyhow::Result<MerkleHash> {
@@ -404,6 +404,25 @@ mod tests {
         assert_eq!(marker.worktree.canonicalize()?, repo.path().canonicalize()?);
         let hash = pointer_hash(&result)?;
         assert_eq!(marker.files, [(hash, b"file".to_vec())]);
+        Ok(())
+    }
+
+    // Git's checkout conversion can give a pointer CRLF endings; clean stores it with LF endings.
+    #[test]
+    #[serial(env_var_write_read)]
+    fn crlf_pointers_are_stored_with_lf_endings() -> anyhow::Result<()> {
+        let repo = TestRepo::new("main")?;
+        let _cwd = CwdGuard::set(repo.path())?;
+        let cleaner = CleanSession::new()?;
+        let pointer = XetPointer::new(HexHash::from_hex(&MerkleHash::default().hex()).unwrap(), 42)
+            .to_string()
+            .replace("size 42\n", "size 42\nextension hello\n");
+        let crlf = pointer.replace('\n', "\r\n");
+        assert_eq!(cleaner.clean(&mut crlf.as_bytes())?, pointer.as_bytes());
+        // CRLF is undone, but the pointer must still be valid.
+        let broken = crlf.replace("size 42", "size x");
+        assert!(matches!(cleaner.clean(&mut broken.as_bytes()), Err(GitHfError::Pointer(PointerError::InvalidSize))));
+        assert!(cleaner.state.lock().unwrap().is_none());
         Ok(())
     }
 
