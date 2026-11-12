@@ -4,10 +4,22 @@ use git_extension_common::GitExtensionError;
 use thiserror::Error;
 use xet_client::ClientError;
 
-use crate::PointerError;
+use crate::{MAX_POINTER_SIZE, PointerError};
 
 #[derive(Error, Debug)]
 pub enum GitHfError {
+    #[error("Invalid filter protocol: {0}")]
+    FilterProtocol(String),
+
+    #[error("Cleaning failed: {0}")]
+    Data(#[from] xet_data::DataError),
+
+    #[error("Runtime error: {0}")]
+    Runtime(#[from] xet_runtime::RuntimeError),
+
+    #[error("Local staging error: {0}")]
+    Staging(String),
+
     #[error("Command failed: {reason}{}", .source.as_ref().map(|e| format!(", {e}")).unwrap_or_default())]
     CommandFailed {
         reason: String,
@@ -43,6 +55,23 @@ pub enum GitHfError {
 
     #[error(transparent)]
     Pointer(#[from] PointerError),
+
+    #[error("{path}: {}", invalid_pointer_advice(source))]
+    InvalidPointer { path: String, source: PointerError },
+}
+
+fn invalid_pointer_advice(error: &PointerError) -> String {
+    match error {
+        PointerError::UnsupportedLfs => {
+            "this is a Git LFS pointer, which is not accepted in a Xet repository; replace it with the file's content"
+                .to_owned()
+        },
+        error => format!(
+            "this file looks like a Xet pointer but is not valid ({error}), so it is not accepted. If it isn't \
+             meant to be a pointer, make it larger than {MAX_POINTER_SIZE} bytes or change its \
+             `version https://hf.co/spec/xet/v1` or `oid xet:` lines"
+        ),
+    }
 }
 
 pub type Result<T> = std::result::Result<T, GitHfError>;
