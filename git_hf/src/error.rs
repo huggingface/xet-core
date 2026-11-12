@@ -10,10 +10,15 @@ use crate::PointerError;
 pub enum GitHfError {
     #[error("Invalid filter protocol: {0}")]
     FilterProtocol(String),
+
     #[error("Cleaning failed: {0}")]
     Data(#[from] xet_data::DataError),
+
     #[error("Runtime error: {0}")]
     Runtime(#[from] xet_runtime::RuntimeError),
+
+    #[error("Local staging error: {0}")]
+    Staging(String),
 
     #[error("Command failed: {reason}{}", .source.as_ref().map(|e| format!(", {e}")).unwrap_or_default())]
     CommandFailed {

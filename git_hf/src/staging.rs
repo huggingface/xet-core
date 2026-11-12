@@ -8,7 +8,6 @@
 //! is the set of local dependencies; each must exist under `xorbs/`, and a missing one is a local
 //! error. File records may also reference xorbs absent from every table; those came from remote
 //! dedup data and are left to the server. Staging must not be deleted while a clean or push uses it.
-use std::collections::HashSet;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,17 +24,18 @@ use xet_client::cas_types::{
 use xet_client::error::{ClientError, Result};
 use xet_core_structures::merklehash::{HashedWrite, MerkleHash};
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
-use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
-use xet_core_structures::metadata_shard::{ChunkIndexSizeEnforcement, MDBShardFile, ShardFileManager};
+use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
+use xet_core_structures::metadata_shard::{ChunkIndexSizeEnforcement, MDBShardFile, MDBShardInfo, ShardFileManager};
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_data::processing::DeduplicationSource;
 use xet_runtime::core::XetContext;
 use xet_runtime::file_utils::SafeFileCreator;
 
+use crate::GitHfError;
+
 /// Read-only index of published repository shards; never subject to remote cache eviction.
 pub(crate) struct StagedDedupSource {
     manager: Arc<ShardFileManager>,
-    registered: tokio::sync::Mutex<HashSet<PathBuf>>,
 }
 
 impl StagedDedupSource {
@@ -43,25 +43,37 @@ impl StagedDedupSource {
         std::fs::create_dir_all(directory)?;
         let directory = std::fs::canonicalize(directory)?;
         Ok(Arc::new(Self {
-            manager: ShardFileManager::new_in_session_directory(ctx, directory, false).await?,
-            registered: tokio::sync::Mutex::new(HashSet::new()),
+            manager: ShardFileManager::new_in_session_directory(ctx, directory, true).await?,
         }))
     }
 
-    pub(crate) async fn refresh(&self) -> xet_data::Result<()> {
-        let mut registered = self.registered.lock().await;
-        for entry in std::fs::read_dir(self.manager.shard_directory())? {
+    /// Registers staged shards published since the last scan; known shards come from the shard file
+    /// cache and are skipped by the manager. Newer shards evict the oldest from a full chunk index.
+    /// Unlike the manager's own scan, an unreadable shard fails the clean rather than being skipped:
+    /// its file records are lost, so pointers cleaned into it cannot be pushed.
+    pub(crate) async fn refresh(&self) -> crate::Result<()> {
+        let directory = self.manager.shard_directory();
+        let mut shards = Vec::new();
+        for entry in std::fs::read_dir(directory)? {
             let path = entry?.path();
-            if path.extension().is_some_and(|ext| ext == "mdb") && !registered.contains(&path) {
-                // Staging has no expiration timestamp; do not use the cache's validity filter.
-                let shard = MDBShardFile::load_from_file(&path, self.manager.shard_file_cache())?;
-                self.manager
-                    .register_shards(&[shard], ChunkIndexSizeEnforcement::StopAtCap)
-                    .await?;
-                registered.insert(path);
+            if path.extension().is_some_and(|ext| ext == "mdb") {
+                let shard = MDBShardFile::load_from_file(&path, self.manager.shard_file_cache()).map_err(|e| {
+                    GitHfError::Staging(format!(
+                        "staged metadata file {} is unreadable ({e}). The data it recorded for recently added large \
+                         files is lost. Delete this metadata file, then run `git add --renormalize .` to re-stage \
+                         those files from the working tree",
+                        path.display()
+                    ))
+                })?;
+                shards.push(shard);
             }
         }
-        Ok(())
+        self.manager
+            .register_shards(&shards, ChunkIndexSizeEnforcement::Eviction)
+            .await
+            .map_err(|e| {
+                GitHfError::Staging(format!("could not register staged metadata files in {}: {e}", directory.display()))
+            })
     }
 }
 
@@ -143,11 +155,11 @@ impl Client for StagingClient {
         _permit: ConnectionPermit,
         _progress: Option<ShardUploadProgressCallback>,
     ) -> Result<Option<MerkleHash>> {
-        let shard = MDBMinimalShard::from_reader(&mut Cursor::new(data), true, true)?;
+        // Written without an expiry, so expiry-aware directory scans keep them.
+        let shard = MDBInMemoryShard::from_reader(&mut Cursor::new(data))?;
         let mut bytes = Vec::new();
         let mut writer = HashedWrite::new(&mut bytes);
-        let verification = (0..shard.num_files()).all(|i| shard.file(i).is_some_and(|f| f.contains_verification()));
-        shard.serialize(&mut writer, verification, None)?;
+        MDBShardInfo::serialize_from(&mut writer, &shard, None)?;
         writer.flush()?;
         let hash = writer.hash();
         let mut file = SafeFileCreator::new(self.root.join("shards").join(format!("{}.mdb", hash.hex())))?;
@@ -196,6 +208,9 @@ impl Client for StagingClient {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicUsize;
+
+    use xet_core_structures::metadata_shard::new_shard_file_cache;
+    use xet_core_structures::metadata_shard::streaming_shard::MDBMinimalShard;
 
     use super::*;
 
@@ -291,16 +306,15 @@ mod tests {
         cleaner.finish().await?;
         session.finalize().await?;
         assert!(std::fs::read_dir(dir.path().join("xorbs"))?.next().is_some());
-        assert!(std::fs::read_dir(dir.path().join("shards"))?.next().is_some());
+        // Staged shards carry no expiry, so the expiry filter of directory scans keeps them.
+        assert_eq!(MDBShardFile::load_all_valid(dir.path().join("shards"), &new_shard_file_cache())?.len(), 1);
         assert_eq!(std::fs::read_dir(cache)?.count(), 0);
         Ok(())
     }
 
     #[tokio::test]
     async fn staged_dependencies_stay_local_but_remote_cache_is_shared() -> anyhow::Result<()> {
-        use xet_core_structures::metadata_shard::{
-            MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDBShardFile, new_shard_file_cache,
-        };
+        use xet_core_structures::metadata_shard::MDB_SHARD_LOCAL_CACHE_EXPIRATION;
         use xet_data::processing::configurations::TranslatorConfig;
         use xet_data::processing::{FileUploadSession, Sha256Policy, UploadShardCachePolicy};
 
@@ -369,6 +383,39 @@ mod tests {
                 assert_eq!(std::fs::read_dir(root.join("xorbs"))?.count(), 1);
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unreadable_staged_shard_fails_refresh_with_its_path() -> anyhow::Result<()> {
+        use xet_data::processing::configurations::TranslatorConfig;
+        use xet_data::processing::{FileUploadSession, Sha256Policy, UploadShardCachePolicy};
+
+        let ctx = XetContext::default()?;
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().join("staging");
+        let client = StagingClient::new(ctx.clone(), &root, None)?;
+        let config = TranslatorConfig::memory_config(&ctx, dir.path().join("session"))?;
+        let session =
+            FileUploadSession::new_with_client(Arc::new(config), client, None, UploadShardCachePolicy::Skip).await?;
+        let (_, mut cleaner) = session.start_clean(None, None, Sha256Policy::Skip)?;
+        cleaner.add_data(&vec![0; 100001]).await?;
+        cleaner.finish().await?;
+        session.finalize().await?;
+
+        // Model a shard whose data never reached the disk after its rename.
+        let shards = std::fs::read_dir(root.join("shards"))?.collect::<std::io::Result<Vec<_>>>()?;
+        let [shard] = &shards[..] else {
+            panic!("expected one staged shard")
+        };
+        let path = std::fs::canonicalize(shard.path())?;
+        let len = std::fs::metadata(&path)?.len();
+        std::fs::OpenOptions::new().write(true).open(&path)?.set_len(len / 2)?;
+
+        let source = StagedDedupSource::new(&ctx, &root.join("shards")).await?;
+        let error = source.refresh().await.unwrap_err();
+        assert!(matches!(error, GitHfError::Staging(_)), "{error:?}");
+        assert!(error.to_string().contains(&path.display().to_string()), "{error}");
         Ok(())
     }
 
