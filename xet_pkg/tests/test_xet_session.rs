@@ -80,7 +80,7 @@ async fn assert_roundtrip_async(session: &XetSession, endpoint: &str, temp: &Tem
         .build()
         .await
         .unwrap();
-    group.download_file_to_path(file_info, dest.clone()).await.unwrap();
+    group.download_file_to_path(file_info, dest.clone(), false).await.unwrap();
     group.finish().await.unwrap();
     assert_eq!(fs::read(&dest).unwrap(), data);
 }
@@ -96,7 +96,7 @@ fn assert_roundtrip_sync(session: &XetSession, endpoint: &str, temp: &TempDir, d
         .with_endpoint(endpoint)
         .build_blocking()
         .unwrap();
-    group.download_file_to_path_blocking(file_info, dest.clone()).unwrap();
+    group.download_file_to_path_blocking(file_info, dest.clone(), false).unwrap();
     group.finish_blocking().unwrap();
     assert_eq!(fs::read(&dest).unwrap(), data);
 }
@@ -135,7 +135,7 @@ async fn assert_upload_from_path_roundtrip_async(
         .await
         .unwrap();
     group
-        .download_file_to_path(to_file_info(&file_meta), dest.clone())
+        .download_file_to_path(to_file_info(&file_meta), dest.clone(), false)
         .await
         .unwrap();
     group.finish().await.unwrap();
@@ -174,7 +174,7 @@ fn assert_upload_from_path_roundtrip_sync(
         .build_blocking()
         .unwrap();
     group
-        .download_file_to_path_blocking(to_file_info(&file_meta), dest.clone())
+        .download_file_to_path_blocking(to_file_info(&file_meta), dest.clone(), false)
         .unwrap();
     group.finish_blocking().unwrap();
     assert_eq!(fs::read(&dest).unwrap(), data);
@@ -321,7 +321,7 @@ async fn async_upload_from_path_roundtrip() {
         .await
         .unwrap();
     group
-        .download_file_to_path(file_meta.xet_info.clone(), dest.clone())
+        .download_file_to_path(file_meta.xet_info.clone(), dest.clone(), false)
         .await
         .unwrap();
     group.finish().await.unwrap();
@@ -371,7 +371,7 @@ async fn async_multiple_files_in_one_commit() {
     for (i, file_meta) in metas.iter().enumerate() {
         let dest = temp.path().join(format!("out_{i}.bin"));
         group
-            .download_file_to_path(file_meta.xet_info.clone(), dest.clone())
+            .download_file_to_path(file_meta.xet_info.clone(), dest.clone(), false)
             .await
             .unwrap();
         dest_paths.push(dest);
@@ -452,7 +452,7 @@ async fn async_multiple_commits_and_groups() {
         .build()
         .await
         .unwrap();
-    group1.download_file_to_path(info_a, dest_a.clone()).await.unwrap();
+    group1.download_file_to_path(info_a, dest_a.clone(), false).await.unwrap();
     group1.finish().await.unwrap();
 
     let group2 = session
@@ -462,7 +462,7 @@ async fn async_multiple_commits_and_groups() {
         .build()
         .await
         .unwrap();
-    group2.download_file_to_path(info_b, dest_b.clone()).await.unwrap();
+    group2.download_file_to_path(info_b, dest_b.clone(), false).await.unwrap();
     group2.finish().await.unwrap();
 
     assert_eq!(fs::read(&dest_a).unwrap(), b"commit A data");
@@ -541,7 +541,7 @@ async fn async_download_unknown_size_roundtrip() {
         .build()
         .await
         .unwrap();
-    group.download_file_to_path(hash_only, dest.clone()).await.unwrap();
+    group.download_file_to_path(hash_only, dest.clone(), false).await.unwrap();
     let report = group.finish().await.unwrap();
 
     for dl in report.downloads.values() {
@@ -571,6 +571,7 @@ async fn async_download_invalid_hash_fails() {
                 sha256: None,
             },
             temp.path().join("missing.bin"),
+            false,
         )
         .await
         .unwrap();
@@ -615,8 +616,8 @@ async fn async_upload_from_path_multiple_files() {
         .build()
         .await
         .unwrap();
-    group.download_file_to_path(info_a, dest_a.clone()).await.unwrap();
-    group.download_file_to_path(info_b, dest_b.clone()).await.unwrap();
+    group.download_file_to_path(info_a, dest_a.clone(), false).await.unwrap();
+    group.download_file_to_path(info_b, dest_b.clone(), false).await.unwrap();
     group.finish().await.unwrap();
 
     assert_eq!(fs::read(&dest_a).unwrap(), b"file A from path");
@@ -684,8 +685,8 @@ fn blocking_multiple_files_roundtrip() {
         .with_endpoint(&endpoint)
         .build_blocking()
         .unwrap();
-    group.download_file_to_path_blocking(info_a, dest_a.clone()).unwrap();
-    group.download_file_to_path_blocking(info_b, dest_b.clone()).unwrap();
+    group.download_file_to_path_blocking(info_a, dest_a.clone(), false).unwrap();
+    group.download_file_to_path_blocking(info_b, dest_b.clone(), false).unwrap();
     group.finish_blocking().unwrap();
 
     assert_eq!(fs::read(&dest_a).unwrap(), data_a);
@@ -761,7 +762,7 @@ fn blocking_multiple_commits_and_groups() {
         .with_endpoint(&endpoint)
         .build_blocking()
         .unwrap();
-    group1.download_file_to_path_blocking(info_a, dest_a.clone()).unwrap();
+    group1.download_file_to_path_blocking(info_a, dest_a.clone(), false).unwrap();
     group1.finish_blocking().unwrap();
     assert_eq!(fs::read(&dest_a).unwrap(), b"blocking commit A");
 
@@ -772,7 +773,7 @@ fn blocking_multiple_commits_and_groups() {
         .with_endpoint(&endpoint)
         .build_blocking()
         .unwrap();
-    group2.download_file_to_path_blocking(info_b, dest_b.clone()).unwrap();
+    group2.download_file_to_path_blocking(info_b, dest_b.clone(), false).unwrap();
     group2.finish_blocking().unwrap();
     assert_eq!(fs::read(&dest_b).unwrap(), b"blocking commit B");
 }
@@ -842,7 +843,7 @@ fn bridge_multiple_files() {
             for (index, file_meta) in metas.iter().enumerate() {
                 let info = file_meta.xet_info.clone();
                 let dest = temp.path().join(format!("{tag}_out_{index}.bin"));
-                group.download_file_to_path(info, dest.clone()).await.unwrap();
+                group.download_file_to_path(info, dest.clone(), false).await.unwrap();
                 outputs.push(dest);
             }
             group.finish().await.unwrap();
@@ -951,8 +952,8 @@ fn deficient_tokio_no_drivers_multiple_files() {
             .build()
             .await
             .unwrap();
-        group.download_file_to_path(info_a, dest_a.clone()).await.unwrap();
-        group.download_file_to_path(info_b, dest_b.clone()).await.unwrap();
+        group.download_file_to_path(info_a, dest_a.clone(), false).await.unwrap();
+        group.download_file_to_path(info_b, dest_b.clone(), false).await.unwrap();
         group.finish().await.unwrap();
 
         assert_eq!(fs::read(&dest_a).unwrap(), b"deficient A");
@@ -1127,6 +1128,7 @@ async fn async_abort_rejects_download_on_existing_group() {
                 sha256: None,
             },
             PathBuf::from("dest.bin"),
+            false,
         )
         .await
         .err()
@@ -1172,7 +1174,7 @@ async fn async_separate_sessions_are_isolated() {
         .await
         .unwrap();
     group
-        .download_file_to_path(info1, temp2.path().join("cross.bin"))
+        .download_file_to_path(info1, temp2.path().join("cross.bin"), false)
         .await
         .unwrap();
     assert!(group.finish().await.is_err());
@@ -2169,7 +2171,7 @@ fn fd_leak_isolate_components() {
                 .build_blocking()
                 .unwrap();
             let dest = temp.path().join("leak.out");
-            group.download_file_to_path_blocking(file_info, dest).unwrap();
+            group.download_file_to_path_blocking(file_info, dest, false).unwrap();
             group.finish_blocking().unwrap();
         }
         drop(session);
@@ -2247,7 +2249,9 @@ fn fd_leak_session_components_breakdown() {
             .unwrap();
         report_fd_count("breakdown: after download group build");
 
-        group.download_file_to_path_blocking(file_meta.xet_info, dest.clone()).unwrap();
+        group
+            .download_file_to_path_blocking(file_meta.xet_info, dest.clone(), false)
+            .unwrap();
         report_fd_count("breakdown: after download_file");
 
         group.finish_blocking().unwrap();

@@ -158,17 +158,26 @@ impl PyXetFileDownloadGroup {
     ///
     /// ``dest_path`` — local filesystem path to write the file to.
     ///
+    /// ``resume`` —  when True appends a file provided by `dest_path` if it exists, truncate and
+    ///               start over otherwise
+    ///
     /// Returns immediately with a :class:`XetFileDownload` handle.  Call
     /// :meth:`finish` (or exit the ``with`` block) to wait for completion.
+    #[pyo3(signature = (file_info, dest_path, resume = false))]
     pub fn start_download_file(
         &self,
         py: Python<'_>,
         file_info: XetFileInfo,
         dest_path: String,
+        resume: bool,
     ) -> PyResult<PyXetFileDownload> {
         let path: std::path::PathBuf = dest_path.into();
         let inner = self.inner.clone();
-        let handle = py.detach(|| inner.download_file_to_path_blocking(file_info, path).map_err(convert_xet_error))?;
+        let handle = py.detach(|| {
+            inner
+                .download_file_to_path_blocking(file_info, path, resume)
+                .map_err(convert_xet_error)
+        })?;
         if let Some(ref handles) = self.download_handles {
             handles
                 .write()

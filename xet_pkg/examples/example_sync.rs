@@ -114,7 +114,7 @@ fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: Option<
     let mut handles = Vec::with_capacity(n_files);
     for m in &metadata {
         let dest = output_dir.join(m.tracking_name.as_deref().unwrap_or("file"));
-        handles.push(group.download_file_to_path_blocking(m.xet_info.clone(), dest)?);
+        handles.push(group.download_file_to_path_blocking(m.xet_info.clone(), dest, false)?);
     }
 
     // Spawn a task to print progress; the main thread blocks in finish() below.

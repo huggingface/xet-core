@@ -50,7 +50,7 @@ mod tests {
         let download_session = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
         for (name, data, xfi) in &xfis {
             let out_path = env.base_dir.join(format!("out_{name}"));
-            let (_id, n_bytes) = download_session.download_file(xfi, &out_path).await.unwrap();
+            let (_id, n_bytes) = download_session.download_file(xfi, &out_path, false).await.unwrap();
 
             assert_eq!(n_bytes, data.len() as u64, "size mismatch for {name}");
             assert_eq!(fs::read(&out_path).unwrap(), *data, "content mismatch for {name}");
