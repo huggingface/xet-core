@@ -72,6 +72,10 @@ impl FileRange {
         Self::new(0, u64::MAX)
     }
 
+    pub fn from_offset(offset: u64) -> Self {
+        Self::new(offset, u64::MAX)
+    }
+
     // consumes self and split the range into a segment of size `segment_size`
     // and a remainder.
     pub fn take_segment(self, segment_size: u64) -> (Self, Option<Self>) {

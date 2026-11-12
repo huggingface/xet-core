@@ -950,7 +950,7 @@ mod tests {
         let config = TranslatorConfig::local_config(&ctx, cas_path).unwrap();
         let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
-        let (_id, _n_bytes) = session.download_file(&xet_file, output_path).await.unwrap();
+        let (_id, _n_bytes) = session.download_file(&xet_file, output_path, false).await.unwrap();
     }
 
     use std::fs::{read, write};

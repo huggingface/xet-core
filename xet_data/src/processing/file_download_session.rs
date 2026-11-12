@@ -328,6 +328,7 @@ impl FileDownloadSession {
         self: &Arc<Self>,
         file_info: XetFileInfo,
         write_path: PathBuf,
+        resume: bool,
     ) -> Result<(UniqueId, JoinHandle<Result<u64>>)> {
         self.check_not_finalized()?;
         let id = UniqueId::new();
@@ -336,36 +337,56 @@ impl FileDownloadSession {
         let semaphore = self.ctx.common.file_download_semaphore.clone();
         let handle = runtime.spawn(async move {
             let _permit = semaphore.acquire().await?;
-            session.download_file_with_id(&file_info, &write_path, id).await
+            session.download_file_with_id(&file_info, &write_path, resume, id).await
         });
         Ok((id, handle))
     }
 
     /// Downloads a complete file to the given path.
-    #[instrument(skip_all, name = "FileDownloadSession::download_file", fields(hash = file_info.hash()))]
-    pub async fn download_file(&self, file_info: &XetFileInfo, write_path: &Path) -> Result<(UniqueId, u64)> {
+    #[instrument(skip_all, name = "FileDownloadSession::download_file", fields(hash = file_info.hash(), resume = resume))]
+    pub async fn download_file(
+        &self,
+        file_info: &XetFileInfo,
+        write_path: &Path,
+        resume: bool,
+    ) -> Result<(UniqueId, u64)> {
         self.check_not_finalized()?;
         let id = UniqueId::new();
-        let n_bytes = self.download_file_with_id(file_info, write_path, id).await?;
+        let n_bytes = self.download_file_with_id(file_info, write_path, resume, id).await?;
         Ok((id, n_bytes))
     }
 
-    async fn download_file_with_id(&self, file_info: &XetFileInfo, write_path: &Path, id: UniqueId) -> Result<u64> {
+    async fn download_file_with_id(
+        &self,
+        file_info: &XetFileInfo,
+        write_path: &Path,
+        resume: bool,
+        id: UniqueId,
+    ) -> Result<u64> {
         let name = Arc::from(write_path.to_string_lossy().as_ref());
         let progress_updater = self.progress.new_item(id, name);
-        let reconstructor = self.setup_reconstructor(file_info, None, Some(progress_updater))?;
-        let n_bytes = reconstructor.reconstruct_to_file(write_path, None, true).await?;
+
+        let offset = if resume {
+            std::fs::metadata(write_path).map(|f| f.len()).ok()
+        } else {
+            None
+        };
+        let range = offset.map(|offset| FileRange::from_offset(offset));
+
+        let reconstructor = self.setup_reconstructor(file_info, range, Some(progress_updater))?;
+        let n_bytes = reconstructor.reconstruct_to_file(write_path, offset, !resume).await?;
+        let total_bytes = offset.unwrap_or(0) + n_bytes;
         // Caller is responsible for cleaning up the file on error (consistent
         // with other error paths); see download_group.rs error handling.
         if let Some(expected_size) = file_info.file_size()
-            && n_bytes != expected_size
+            && total_bytes != expected_size
         {
             return Err(DataError::SizeMismatch {
                 expected: expected_size,
-                actual: n_bytes,
+                actual: total_bytes,
             });
         }
-        Ok(n_bytes)
+        Ok(total_bytes)
     }
 }
 
@@ -538,7 +559,85 @@ mod tests {
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("output.txt");
-                let (_id, n_bytes) = session.download_file(&xfi, &out_path).await.unwrap();
+                let (_id, n_bytes) = session.download_file(&xfi, &out_path, false).await.unwrap();
+
+                assert_eq!(n_bytes, original_data.len() as u64);
+                assert_eq!(read(&out_path).unwrap(), original_data);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_file_with_resume() {
+        let runtime = get_runtime();
+        runtime
+            .bridge_sync(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"Resume download test: first part | second part | final part";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+
+                let out_path = temp.path().join("resume_output.txt");
+
+                // Seed a partial file (first 20 bytes) to simulate an interrupted download.
+                let partial_size = 20usize;
+                write(&out_path, &original_data[..partial_size]).unwrap();
+
+                let (_id, n_bytes) = session.download_file(&xfi, &out_path, true).await.unwrap();
+
+                assert_eq!(n_bytes, original_data.len() as u64);
+                assert_eq!(read(&out_path).unwrap(), original_data);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_file_with_resume_empty_file() {
+        let runtime = get_runtime();
+        runtime
+            .bridge_sync(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"Resume from empty file should work like fresh download";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+
+                let out_path = temp.path().join("resume_empty.txt");
+                write(&out_path, b"").unwrap();
+
+                let (_id, n_bytes) = session.download_file(&xfi, &out_path, true).await.unwrap();
+
+                assert_eq!(n_bytes, original_data.len() as u64);
+                assert_eq!(read(&out_path).unwrap(), original_data);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_download_file_with_resume_already_complete() {
+        let runtime = get_runtime();
+        runtime
+            .bridge_sync(async {
+                let temp = tempdir().unwrap();
+                let cas_path = temp.path().join("cas");
+                let original_data = b"Already complete file, resume leave it unchanged";
+
+                let xfi = upload_data(&cas_path, original_data).await;
+
+                let config = TranslatorConfig::local_config(&XetContext::default().unwrap(), &cas_path).unwrap();
+                let session = FileDownloadSession::new(config.into(), None).await.unwrap();
+
+                let out_path = temp.path().join("resume_complete.txt");
+                write(&out_path, original_data).unwrap();
+
+                let (_id, n_bytes) = session.download_file(&xfi, &out_path, true).await.unwrap();
 
                 assert_eq!(n_bytes, original_data.len() as u64);
                 assert_eq!(read(&out_path).unwrap(), original_data);
@@ -563,7 +662,7 @@ mod tests {
                 let out_path = temp.path().join("deep").join("nested").join("dir").join("output.txt");
                 assert!(!out_path.parent().unwrap().exists());
 
-                session.download_file(&xfi, &out_path).await.unwrap();
+                session.download_file(&xfi, &out_path, false).await.unwrap();
 
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
@@ -669,12 +768,14 @@ mod tests {
                 let session_a = session.clone();
                 let xfi_a_clone = xfi_a.clone();
                 let out_a_clone = out_a.clone();
-                let task_a = tokio::spawn(async move { session_a.download_file(&xfi_a_clone, &out_a_clone).await });
+                let task_a =
+                    tokio::spawn(async move { session_a.download_file(&xfi_a_clone, &out_a_clone, false).await });
 
                 let session_b = session.clone();
                 let xfi_b_clone = xfi_b.clone();
                 let out_b_clone = out_b.clone();
-                let task_b = tokio::spawn(async move { session_b.download_file(&xfi_b_clone, &out_b_clone).await });
+                let task_b =
+                    tokio::spawn(async move { session_b.download_file(&xfi_b_clone, &out_b_clone, false).await });
 
                 task_a.await.unwrap().unwrap();
                 task_b.await.unwrap().unwrap();
@@ -834,7 +935,7 @@ mod tests {
                 tokio::task::yield_now().await;
 
                 let out_path = temp.path().join("after_drop.txt");
-                session.download_file(&xfi, &out_path).await.unwrap();
+                session.download_file(&xfi, &out_path, false).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
@@ -864,7 +965,7 @@ mod tests {
                 }
 
                 let out_path = temp.path().join("after_cycles.txt");
-                session.download_file(&xfi, &out_path).await.unwrap();
+                session.download_file(&xfi, &out_path, false).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
@@ -896,7 +997,7 @@ mod tests {
                 tokio::task::yield_now().await;
 
                 let out_path = temp.path().join("after_blocking_drop.txt");
-                session.download_file(&xfi, &out_path).await.unwrap();
+                session.download_file(&xfi, &out_path, false).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
@@ -945,7 +1046,7 @@ mod tests {
                 assert!(stream.next().await.unwrap().is_none());
 
                 let out_path = temp.path().join("after_cancel.txt");
-                session.download_file(&xfi, &out_path).await.unwrap();
+                session.download_file(&xfi, &out_path, false).await.unwrap();
                 assert_eq!(read(&out_path).unwrap(), original_data);
             })
             .unwrap();
@@ -1155,7 +1256,7 @@ mod tests {
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("output_unknown.txt");
-                let (_id, n_bytes) = session.download_file(&xfi_no_size, &out_path).await.unwrap();
+                let (_id, n_bytes) = session.download_file(&xfi_no_size, &out_path, false).await.unwrap();
 
                 assert_eq!(n_bytes, original_data.len() as u64);
                 assert_eq!(read(&out_path).unwrap(), original_data);
@@ -1209,7 +1310,7 @@ mod tests {
                 let session = FileDownloadSession::new(config.into(), None).await.unwrap();
 
                 let out_path = temp.path().join("output_mismatch.txt");
-                let err = session.download_file(&wrong_size_xfi, &out_path).await.unwrap_err();
+                let err = session.download_file(&wrong_size_xfi, &out_path, false).await.unwrap_err();
 
                 assert!(
                     matches!(err, DataError::SizeMismatch { expected: 999, .. }),

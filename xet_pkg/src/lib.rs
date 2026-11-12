@@ -33,7 +33,7 @@
 //!     .new_file_download_group()?
 //!     .with_token_info("read-token", 1_700_000_000)
 //!     .build_blocking()?;
-//! group.download_file_to_path_blocking(meta.xet_info.clone(), "out/file.bin".into())?;
+//! group.download_file_to_path_blocking(meta.xet_info.clone(), "out/file.bin".into(), false)?;
 //! group.finish_blocking()?;
 //! # Ok(())
 //! # }

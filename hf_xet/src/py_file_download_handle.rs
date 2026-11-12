@@ -109,7 +109,7 @@ mod tests {
             .build_blocking()
             .unwrap();
         let dest = temp.path().join("out.bin");
-        let handle = group.download_file_to_path_blocking(file_info, dest.clone()).unwrap();
+        let handle = group.download_file_to_path_blocking(file_info, dest.clone(), false).unwrap();
         let py_handle = PyXetFileDownload { inner: handle };
         assert!(py_handle.task_id().0 > 0);
         Python::attach(|py| {
@@ -132,7 +132,7 @@ mod tests {
             .build_blocking()
             .unwrap();
         let dest = temp.path().join("cancelled.bin");
-        let handle = group.download_file_to_path_blocking(file_info, dest).unwrap();
+        let handle = group.download_file_to_path_blocking(file_info, dest, false).unwrap();
         let py_handle = PyXetFileDownload { inner: handle };
         // cancel should not panic
         py_handle.cancel();
