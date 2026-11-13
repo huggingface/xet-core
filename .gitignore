@@ -22,3 +22,6 @@ venv
 **/*.env
 .worktrees/
 **/node_modules/
+
+# Nix build artifact
+result
