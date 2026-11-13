@@ -15,7 +15,9 @@ use tracing::{debug, event, info, instrument, warn};
 #[cfg(target_family = "wasm")]
 use web_time::Instant;
 use xet_core_structures::merklehash::MerkleHash;
-use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
+use xet_core_structures::metadata_shard::file_structs::{
+    FileDataSequenceEntry, FileDataSequenceHeader, FileVerificationEntry, MDBFileInfo,
+};
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::XetContext;
 
@@ -1213,9 +1215,20 @@ impl Client for RemoteClient {
             .await?;
 
         let terms_count = response.terms.len();
+        // Verification entries are only usable if every term carries one.
+        let verification: Vec<FileVerificationEntry> = response
+            .terms
+            .iter()
+            .map_while(|ce| ce.verification_hash.map(|h| FileVerificationEntry::new(h.into())))
+            .collect();
+        let verification = if verification.len() == terms_count {
+            verification
+        } else {
+            vec![]
+        };
         let result = Some((
             MDBFileInfo {
-                metadata: FileDataSequenceHeader::new(*file_hash, terms_count, false, false),
+                metadata: FileDataSequenceHeader::new(*file_hash, terms_count, !verification.is_empty(), false),
                 segments: response
                     .terms
                     .into_iter()
@@ -1223,7 +1236,7 @@ impl Client for RemoteClient {
                         FileDataSequenceEntry::new(ce.hash.into(), ce.unpacked_length, ce.range.start, ce.range.end)
                     })
                     .collect(),
-                verification: vec![],
+                verification,
                 metadata_ext: None,
             },
             None,

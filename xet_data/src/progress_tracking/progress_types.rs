@@ -17,6 +17,9 @@ pub struct ItemProgress {
     pub bytes_completed: AtomicU64,
     pub transfer_bytes: AtomicU64,
     pub transfer_bytes_completed: AtomicU64,
+    /// Bytes of an existing local file being checked for reuse before a resumed download.
+    pub resume_check_bytes: AtomicU64,
+    pub resume_check_bytes_completed: AtomicU64,
     pub size_finalized: AtomicBool,
 }
 
@@ -29,6 +32,8 @@ impl ItemProgress {
             bytes_completed: AtomicU64::new(0),
             transfer_bytes: AtomicU64::new(0),
             transfer_bytes_completed: AtomicU64::new(0),
+            resume_check_bytes: AtomicU64::new(0),
+            resume_check_bytes_completed: AtomicU64::new(0),
             size_finalized: AtomicBool::new(false),
         }
     }
@@ -40,6 +45,8 @@ impl ItemProgress {
         let transfer_bytes_completed = self.transfer_bytes_completed.load(Ordering::Acquire);
         let total_bytes = self.total_bytes.load(Ordering::Acquire);
         let transfer_bytes = self.transfer_bytes.load(Ordering::Acquire);
+        let resume_check_bytes_completed = self.resume_check_bytes_completed.load(Ordering::Acquire);
+        let resume_check_bytes = self.resume_check_bytes.load(Ordering::Acquire);
 
         debug_assert_le!(bytes_completed, total_bytes);
         debug_assert_le!(transfer_bytes_completed, transfer_bytes);
@@ -48,6 +55,8 @@ impl ItemProgress {
             item_name: self.name.to_string(),
             total_bytes,
             bytes_completed,
+            resume_check_bytes,
+            resume_check_bytes_completed,
         }
     }
 }
@@ -70,6 +79,8 @@ pub struct GroupProgress {
     pub total_bytes_completed: AtomicU64,
     pub total_transfer_bytes: AtomicU64,
     pub total_transfer_bytes_completed: AtomicU64,
+    pub total_resume_check_bytes: AtomicU64,
+    pub total_resume_check_bytes_completed: AtomicU64,
     items: Mutex<HashMap<UniqueId, Arc<ItemProgress>>>,
     speed_tracker: Mutex<SpeedTracker>,
 }
@@ -87,6 +98,8 @@ impl GroupProgress {
             total_bytes_completed: AtomicU64::new(0),
             total_transfer_bytes: AtomicU64::new(0),
             total_transfer_bytes_completed: AtomicU64::new(0),
+            total_resume_check_bytes: AtomicU64::new(0),
+            total_resume_check_bytes_completed: AtomicU64::new(0),
             items: Mutex::new(HashMap::new()),
             speed_tracker: Mutex::new(SpeedTracker::new(half_life).with_min_observations(min_observations)),
         }
@@ -100,6 +113,7 @@ impl GroupProgress {
         Arc::new(ItemProgressUpdater {
             item,
             group: self.clone(),
+            parent_item: None,
         })
     }
 
@@ -132,6 +146,8 @@ impl GroupProgress {
             total_transfer_bytes,
             total_transfer_bytes_completed,
             total_transfer_bytes_completion_rate: transfer_rate,
+            total_resume_check_bytes: self.total_resume_check_bytes.load(Ordering::Acquire),
+            total_resume_check_bytes_completed: self.total_resume_check_bytes_completed.load(Ordering::Acquire),
             shard: None,
         }
     }
@@ -220,6 +236,8 @@ impl Default for GroupProgress {
             total_bytes_completed: AtomicU64::new(0),
             total_transfer_bytes: AtomicU64::new(0),
             total_transfer_bytes_completed: AtomicU64::new(0),
+            total_resume_check_bytes: AtomicU64::new(0),
+            total_resume_check_bytes_completed: AtomicU64::new(0),
             items: Mutex::new(HashMap::new()),
             speed_tracker: Mutex::new(
                 SpeedTracker::new(DEFAULT_SPEED_HALF_LIFE).with_min_observations(DEFAULT_MIN_OBSERVATIONS_FOR_RATE),
@@ -500,6 +518,9 @@ impl UploadGroupProgress {
 pub struct ItemProgressUpdater {
     item: Arc<ItemProgress>,
     group: Arc<GroupProgress>,
+    /// Set for a range child (see [`Self::new_range_child`]): completions and transfer sizes are
+    /// forwarded to this item, whose total size is owned by the parent updater.
+    parent_item: Option<Arc<ItemProgress>>,
 }
 
 impl ItemProgressUpdater {
@@ -509,7 +530,26 @@ impl ItemProgressUpdater {
     pub fn new_standalone(name: &str) -> Arc<Self> {
         let group = Arc::new(GroupProgress::new());
         let item = Arc::new(ItemProgress::new(UniqueId::new(), Arc::from(name)));
-        Arc::new(Self { item, group })
+        Arc::new(Self {
+            item,
+            group,
+            parent_item: None,
+        })
+    }
+
+    /// Create an updater for reconstructing one byte range of this item.
+    ///
+    /// Used when a file is written by several ranged reconstructions (e.g. resuming a partially
+    /// downloaded file). The child tracks its own range size so each reconstruction's own
+    /// consistency checks still hold, while completed bytes and transfer sizes are forwarded to
+    /// this item and the group. The total size of this item must be set on the parent.
+    pub fn new_range_child(&self) -> Arc<Self> {
+        let item = Arc::new(ItemProgress::new(self.item.id, self.item.name.clone()));
+        Arc::new(Self {
+            item,
+            group: self.group.clone(),
+            parent_item: Some(self.item.clone()),
+        })
     }
 
     // === Size updates (use fetch_update for full atomicity) ===
@@ -529,7 +569,9 @@ impl ItemProgressUpdater {
             .item
             .total_bytes
             .fetch_update(Ordering::Release, Ordering::Acquire, |old| if total > old { Some(total) } else { None });
-        if let Ok(old) = result {
+        if let Ok(old) = result
+            && self.parent_item.is_none()
+        {
             self.group.total_bytes.fetch_add(total - old, Ordering::Release);
         }
     }
@@ -542,7 +584,28 @@ impl ItemProgressUpdater {
             .fetch_update(Ordering::Release, Ordering::Acquire, |old| if total > old { Some(total) } else { None });
         if let Ok(old) = result {
             self.group.total_transfer_bytes.fetch_add(total - old, Ordering::Release);
+            if let Some(parent) = &self.parent_item {
+                parent.transfer_bytes.fetch_add(total - old, Ordering::Release);
+            }
         }
+    }
+
+    /// Set the number of existing local bytes that will be checked before a resumed download.
+    pub fn update_resume_check_size(&self, total: u64) {
+        let old = self.item.resume_check_bytes.swap(total, Ordering::AcqRel);
+        self.group.total_resume_check_bytes.fetch_add(total, Ordering::Release);
+        self.group.total_resume_check_bytes.fetch_sub(old, Ordering::Release);
+    }
+
+    /// Report existing local bytes checked (whether they end up reused or not).
+    pub fn report_resume_check_bytes_completed(&self, increment: u64) {
+        if increment == 0 {
+            return;
+        }
+        self.group
+            .total_resume_check_bytes_completed
+            .fetch_add(increment, Ordering::Release);
+        self.item.resume_check_bytes_completed.fetch_add(increment, Ordering::Release);
     }
 
     // === Completion updates (group first, then item) ===
@@ -553,6 +616,9 @@ impl ItemProgressUpdater {
             return;
         }
         self.group.total_bytes_completed.fetch_add(increment, Ordering::Release);
+        if let Some(parent) = &self.parent_item {
+            parent.bytes_completed.fetch_add(increment, Ordering::Release);
+        }
         let new_completed = self.item.bytes_completed.fetch_add(increment, Ordering::Release) + increment;
         debug_assert_le!(
             new_completed,
@@ -572,6 +638,9 @@ impl ItemProgressUpdater {
         self.group
             .total_transfer_bytes_completed
             .fetch_add(increment, Ordering::Release);
+        if let Some(parent) = &self.parent_item {
+            parent.transfer_bytes_completed.fetch_add(increment, Ordering::Release);
+        }
         let new_completed = self.item.transfer_bytes_completed.fetch_add(increment, Ordering::Release) + increment;
         debug_assert_le!(
             new_completed,
@@ -637,6 +706,12 @@ pub struct GroupProgressReport {
     pub total_transfer_bytes: u64,
     pub total_transfer_bytes_completed: u64,
     pub total_transfer_bytes_completion_rate: Option<f64>,
+    /// Bytes of existing local files being checked for reuse before resumed downloads.
+    ///
+    /// `0` unless a download was started with `reuse_existing` on a non-empty file. Checked bytes
+    /// that match are credited to `total_bytes_completed` without being transferred.
+    pub total_resume_check_bytes: u64,
+    pub total_resume_check_bytes_completed: u64,
     /// Shard finalization progress when an upload commit is tracking shards.
     ///
     /// `None` for downloads, dry-run, or older callers that predate the shard
@@ -663,6 +738,9 @@ pub struct ItemProgressReport {
     pub item_name: String,
     pub total_bytes: u64,
     pub bytes_completed: u64,
+    /// Bytes of an existing local file being checked for reuse (`0` when not resuming).
+    pub resume_check_bytes: u64,
+    pub resume_check_bytes_completed: u64,
 }
 
 #[cfg(test)]
