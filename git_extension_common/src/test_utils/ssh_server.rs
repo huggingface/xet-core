@@ -2,8 +2,8 @@ use std::io;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use russh::keys::{Certificate, *};
-use russh::server::{Msg, Server as _, Session};
+use russh::keys::Certificate;
+use russh::server::{ChannelOpenHandle, Msg, Server as _, Session, VerifiedPublicKey};
 use russh::*;
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -94,9 +94,11 @@ impl server::Handler for ServerImpl {
     async fn channel_open_session(
         &mut self,
         _channel: Channel<Msg>,
+        reply: ChannelOpenHandle,
         _session: &mut Session,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
+    ) -> Result<(), Self::Error> {
+        reply.accept().await;
+        Ok(())
     }
 
     async fn pty_request(
@@ -125,7 +127,7 @@ impl server::Handler for ServerImpl {
         Ok(server::Auth::Accept)
     }
 
-    async fn auth_publickey(&mut self, _: &str, _key: &ssh_key::PublicKey) -> Result<server::Auth, Self::Error> {
+    async fn auth_publickey(&mut self, _: &str, _key: VerifiedPublicKey<'_>) -> Result<server::Auth, Self::Error> {
         Ok(server::Auth::Accept)
     }
 
