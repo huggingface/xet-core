@@ -1,10 +1,10 @@
 //! Selects one file, then streams it into the caller's shared clean session.
-use std::io::Read;
-
+use tokio::io::AsyncRead;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_data::processing::Sha256Policy;
 
 use crate::clean_session::CleanSession;
+use crate::filter_protocol::Content;
 use crate::selection::{BINARY_LIMIT, BINARY_SAMPLE_SIZE, FILE_LIMIT, TEXT_LIMIT, is_binary};
 use crate::{GitHfError, HexHash, MAX_POINTER_SIZE, PointerError, Result, XetPointer};
 
@@ -19,11 +19,11 @@ impl<'a> SelectingFileCleaner<'a> {
         Self { session, pathname }
     }
 
-    pub(crate) fn clean(self, input: &mut impl Read) -> Result<Vec<u8>> {
+    pub(crate) async fn clean(self, input: &mut Content<'_, impl AsyncRead + Unpin>) -> Result<Vec<u8>> {
         // The binary sample covers any pointer; `parse` treats input over MAX_POINTER_SIZE as data.
         const _: () = assert!(BINARY_SAMPLE_SIZE > MAX_POINTER_SIZE);
         let mut prefix = Vec::new();
-        input.take(BINARY_SAMPLE_SIZE as u64).read_to_end(&mut prefix)?;
+        input.read_up_to(&mut prefix, BINARY_SAMPLE_SIZE).await?;
         let invalid = |source| GitHfError::InvalidPointer {
             path: String::from_utf8_lossy(self.pathname).into_owned(),
             source,
@@ -42,23 +42,21 @@ impl<'a> SelectingFileCleaner<'a> {
             return Ok(pointer);
         }
         let threshold = if is_binary(&prefix) { BINARY_LIMIT } else { TEXT_LIMIT };
-        let remaining = threshold + 1 - prefix.len();
-        input.take(remaining as u64).read_to_end(&mut prefix)?;
+        input.read_up_to(&mut prefix, threshold + 1).await?;
         if prefix.len() <= threshold {
             return Ok(prefix);
         }
-        let state = self.session.state()?;
-        let handle = self.session.ctx.runtime.handle();
-        handle.block_on(state.dedup.refresh())?;
+        let state = self.session.state().await?;
+        state.dedup.refresh().await?;
         // Any error below leaves this file's background work running; the caller must exit
         // without finalizing the shared session.
         let (_, mut cleaner) = state.session.start_clean(None, None, Sha256Policy::Skip)?;
-        handle.block_on(cleaner.add_data(&prefix))?;
+        cleaner.add_data(&prefix).await?;
         let mut size = prefix.len() as u64;
         drop(prefix);
         let mut buffer = [0; 65536];
         loop {
-            let n = input.read(&mut buffer)?;
+            let n = input.read(&mut buffer).await?;
             if n == 0 {
                 break;
             }
@@ -66,9 +64,9 @@ impl<'a> SelectingFileCleaner<'a> {
             if size > FILE_LIMIT {
                 return Err(GitHfError::NotSupported("File exceeds 500 GB".into()));
             }
-            handle.block_on(cleaner.add_data(&buffer[..n]))?;
+            cleaner.add_data(&buffer[..n]).await?;
         }
-        let (info, _) = handle.block_on(cleaner.finish())?;
+        let (info, _) = cleaner.finish().await?;
         let hash = MerkleHash::from_hex(&info.hash).map_err(|e| GitHfError::Internal(e.to_string()))?;
         let pointer_hash = HexHash::from_hex(&hash.hex())
             .ok_or_else(|| GitHfError::Internal(format!("file hash {} isn't a pointer hash", info.hash)))?;

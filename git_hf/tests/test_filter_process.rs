@@ -88,8 +88,8 @@ fn git_add_checkout_and_staged_reconstruction() -> Result<()> {
 }
 
 /// Git writes the index before closing the filter and ignores its exit status, so a failed
-/// finalization cannot fail `git add`. Staging is shared by linked worktrees, so the marker must
-/// name the worktree whose relative paths need re-adding.
+/// finalization cannot fail `git add`. Staging is shared by linked worktrees, so the message names
+/// the worktree whose relative paths need re-adding, and the marker lists the unbacked hashes.
 #[cfg(unix)]
 #[test]
 #[serial(env_var_write_read)]
@@ -136,10 +136,7 @@ fn finalize_failure_is_reported_and_recoverable_per_worktree() -> Result<()> {
 
     let markers = fs::read_dir(root.join("finalize-failed"))?.collect::<std::io::Result<Vec<_>>>()?;
     assert_eq!(markers.len(), 1);
-    let marker = fs::read(markers[0].path())?;
-    let records = marker.strip_suffix(b"\0").unwrap().split(|&b| b == 0).collect::<Vec<_>>();
-    assert_eq!(fs::canonicalize(String::from_utf8(records[0].to_vec())?)?, fs::canonicalize(&linked)?);
-    assert_eq!(records[1..], [linked_pointer.hash.as_str().as_bytes(), b"large".as_slice()]);
+    assert_eq!(fs::read_to_string(markers[0].path())?, format!("{}\n", linked_pointer.hash));
 
     // Recovery happens in the recorded worktree and stages that worktree's content.
     fs::set_permissions(&xorbs, fs::Permissions::from_mode(0o755))?;
