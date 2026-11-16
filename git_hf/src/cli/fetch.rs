@@ -1,4 +1,4 @@
-use git_extension_common::{GitRepo, Interaction};
+use git_extension_common::{GitRepo, Interaction, Scheme};
 use xet_client::hub_client::Operation;
 use xet_data::processing::FileDownloadSession;
 use xet_runtime::core::XetContext;
@@ -28,7 +28,14 @@ pub(super) fn run(remote: Option<&str>, revision: &str) -> Result<()> {
         Some(remote) => repo.remote_name_to_url(remote)?,
         None => repo.remote_url()?,
     };
-    let credential = resolve_credential(&repo, &url, Operation::Download, Interaction::Allowed)?;
+    // An HTTP(S) remote never prompts, as for the clean filter: it falls back to the Hub token or to
+    // anonymous access, which reads public repositories. SSH may still prompt, e.g. for a key passphrase,
+    // since SSH always authenticates.
+    let interaction = match url.scheme() {
+        Scheme::Ssh | Scheme::GitSsh => Interaction::Allowed,
+        _ => Interaction::Never,
+    };
+    let credential = resolve_credential(&repo, &url, Operation::Download, interaction)?;
     let ctx = XetContext::default()?;
     let session_id = UniqueId::new().to_string();
     let runtime = ctx.runtime.clone();

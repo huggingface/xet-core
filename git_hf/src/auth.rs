@@ -10,9 +10,9 @@
 //!
 //! [`Interaction::Allowed`] (pre-push) fails if none of these yields a credential.
 //!
-//! [`Interaction::Never`] (the clean filter) never prompts: SSH runs in batch mode, and helpers return
-//! only stored credentials. A credential there improves deduplication but isn't required, so if an
-//! HTTP(S) remote has none of the above, it falls back to:
+//! [`Interaction::Never`] (the clean filter, and fetch over HTTP(S)) never prompts: SSH runs in batch
+//! mode, and helpers return only stored credentials. Reading needs no credential for a public
+//! repository, so if an HTTP(S) remote has none of the above, it falls back to:
 //!
 //! 4. the `HF_TOKEN` environment variable, or the legacy `HUGGING_FACE_HUB_TOKEN`;
 //! 5. the Hugging Face token file written by `hf auth login`;
