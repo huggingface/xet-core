@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use git_extension_common::process_wrapping::run_git_captured;
 
 use crate::constants::GIT_HF_PROGRAM;
@@ -32,30 +30,26 @@ impl ConfigLocation {
 
 // Install git-hf in the system Git config.
 pub(super) fn system() -> Result<()> {
-    install_impl(&std::env::current_dir()?, ConfigLocation::System)
+    install_impl(ConfigLocation::System)
 }
 
 // Install git-hf in the global Git config.
 pub(super) fn global() -> Result<()> {
-    install_impl(&std::env::current_dir()?, ConfigLocation::Global)
+    install_impl(ConfigLocation::Global)
 }
 
 // Install git-hf in the Git config of the repository Git selects for the current directory.
 pub(super) fn local() -> Result<()> {
-    local_in(&std::env::current_dir()?)
-}
-
-// Install git-hf in the Git config of the repository Git selects for `wd`.
-pub(super) fn local_in(wd: &Path) -> Result<()> {
-    install_impl(wd, ConfigLocation::Local)
+    install_impl(ConfigLocation::Local)
 }
 
 // Set up the required "hf" process filter.
-fn install_impl(wd: &Path, location: ConfigLocation) -> Result<()> {
+fn install_impl(location: ConfigLocation) -> Result<()> {
+    let wd = std::env::current_dir()?;
     let loc_profile = location.profile();
 
     // Check every process value before changing config, so a conflicting duplicate is not overlooked.
-    let process = git_get_all_config_values(wd, loc_profile, PROCESS_KEY)?;
+    let process = git_get_all_config_values(&wd, loc_profile, PROCESS_KEY)?;
     if process.iter().any(|value| value != PROCESS.as_bytes()) {
         return Err(GitHfError::InvalidGitConfig(format!(
             "{PROCESS_KEY} conflicts with git-hf in {loc_profile} config; preserve or remove that setting before installing"
@@ -63,14 +57,14 @@ fn install_impl(wd: &Path, location: ConfigLocation) -> Result<()> {
     }
 
     // Once the process is compatible, enforce required=true even if it was disabled or duplicated.
-    run_git_captured(wd, "config", [loc_profile, "--replace-all", REQUIRED_KEY, "true"])?;
+    run_git_captured(&wd, "config", [loc_profile, "--replace-all", REQUIRED_KEY, "true"])?;
     if process.is_empty() {
-        run_git_captured(wd, "config", [loc_profile, PROCESS_KEY, PROCESS])?;
+        run_git_captured(&wd, "config", [loc_profile, PROCESS_KEY, PROCESS])?;
     }
 
     // Hooks are per repository. The filter also installs the hook when it first stages a file.
     if matches!(location, ConfigLocation::Local)
-        && let Some(notice) = ensure_installed(wd)?.foreign_hook_notice()
+        && let Some(notice) = ensure_installed(&wd)?.foreign_hook_notice()
     {
         println!("{GIT_HF_PROGRAM}: {notice}");
     }

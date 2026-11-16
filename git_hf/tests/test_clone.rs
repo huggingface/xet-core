@@ -142,3 +142,38 @@ fn clone_sets_up_submodules_that_use_the_filter() -> Result<()> {
     assert_eq!(fs::read_to_string(copy.join("a"))?, "alpha\n");
     Ok(())
 }
+
+/// Run with another repository's `GIT_DIR`, as under `git --git-dir`, clone still sets up the clone
+/// and leaves that repository alone. (`git clone` ignores `GIT_DIR`; it honors `GIT_WORK_TREE`, so
+/// that one is left to Git.)
+#[test]
+#[serial(env_var_write_read)]
+fn clone_ignores_the_callers_repository_environment() -> Result<()> {
+    let _path = git_hf_on_path()?;
+    let source = TestRepo::new("main")?;
+    let pointer = git_hf::XetPointer::new(git_hf::HexHash::from_hex(&"1".repeat(64)).unwrap(), 5).to_string();
+    commit(
+        &source,
+        &[
+            (".gitattributes", "* filter=hf -text\n.gitattributes filter=\n"),
+            ("large", &pointer),
+        ],
+    )?;
+    let parent = tempfile::tempdir()?;
+    let other = parent.path().join("other");
+    run_git_captured(parent.path(), "init", ["other"])?;
+    let copy = parent.path().join("copy");
+    let output = Command::new(env!("CARGO_BIN_EXE_git-hf"))
+        .current_dir(parent.path())
+        .args([OsStr::new("clone"), source.path().as_os_str(), copy.as_os_str()])
+        .env("GIT_DIR", other.join(".git"))
+        .output()?;
+    // The pointer cannot be downloaded from a local source, so only the set-up up to pull succeeds.
+    assert!(!output.status.success());
+    assert_eq!(local_config(&copy, "filter.hf.process")?, "git-hf filter-process --smudge-passthrough");
+    assert!(copy.join(".git/hooks/pre-push").exists());
+    assert_eq!(fs::read_to_string(copy.join("large"))?, pointer);
+    assert_eq!(local_config(&other, "filter.hf.process")?, "");
+    assert!(!other.join(".git/hooks/pre-push").exists());
+    Ok(())
+}
