@@ -22,10 +22,13 @@ const HOOK: &str = "pre-push";
 const HOOK_MARKER: &str = "# git-hf pre-push hook";
 /// The line a hook git-hf did not write needs, before anything else reads its standard input, to upload staged data.
 pub(crate) const HOOK_COMMAND: &str = "git-hf pre-push \"$@\" || exit 1";
-const HOOK_SCRIPT: &str = "#!/bin/sh
-# git-hf pre-push hook: uploads staged Xet data. Remove with `git hf uninstall --local`.
-exec git-hf pre-push \"$@\"
-";
+// Explicit `\n` escapes: a multi-line literal would take CRLF endings from a CRLF checkout of this
+// source, and `#!/bin/sh\r` names no interpreter.
+const HOOK_SCRIPT: &str = concat!(
+    "#!/bin/sh\n",
+    "# git-hf pre-push hook: uploads staged Xet data. Remove with `git hf uninstall --local`.\n",
+    "exec git-hf pre-push \"$@\"\n",
+);
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum InstallOutcome {
@@ -152,6 +155,7 @@ mod tests {
         assert_eq!(ensure_installed(repo.path())?, InstallOutcome::AlreadyInstalled);
         let hook = hooks_dir(repo.path())?.join(HOOK);
         assert_eq!(fs::read_to_string(&hook)?, HOOK_SCRIPT);
+        assert!(!fs::read_to_string(&hook)?.contains('\r'));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
