@@ -8,7 +8,7 @@
 //!
 //! Checkout changes worktree content outside Git, so it records each replaced file's stat data in
 //! the index. Otherwise Git would see the files as modified and rerun the clean filter over each.
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -54,54 +54,98 @@ impl Target {
 /// Replaces the worktree files of indexed pointers under `pathspecs` (repository-relative paths;
 /// empty selects everything) with their reconstructed content.
 pub(crate) fn checkout(wd: &Path, cache: &FileCache, pathspecs: &[Vec<u8>], force: bool) -> Result<CheckoutSummary> {
-    let repo = git2::Repository::discover(wd)?;
-    let workdir = repo
-        .workdir()
-        .ok_or_else(|| GitHfError::NotSupported("checkout requires a worktree".into()))?
-        .canonicalize()?;
-    let mut summary = CheckoutSummary::default();
-    let mut selected = Vec::new();
-    for target in indexed_pointers(&repo, pathspecs)? {
-        let path = path_from_git(&target.path)?;
-        if !is_regular_file_in(&workdir, &path)? {
-            continue;
+    CheckoutPlan::new(wd, pathspecs, force)?.apply(cache)
+}
+
+/// The worktree files a checkout replaces, chosen once so that pull fetches exactly the data the
+/// checkout then needs. Applying the plan rechecks each file, so changes made meanwhile are kept.
+pub(crate) struct CheckoutPlan {
+    repo: git2::Repository,
+    selected: Vec<(Target, PathBuf)>,
+    modified: Vec<String>,
+    force: bool,
+}
+
+impl CheckoutPlan {
+    /// Selects the indexed pointers under `pathspecs` (repository-relative paths; empty selects
+    /// everything) whose worktree files still hold their pointer, or all of them when forced.
+    pub(crate) fn new(wd: &Path, pathspecs: &[Vec<u8>], force: bool) -> Result<Self> {
+        let repo = git2::Repository::discover(wd)?;
+        let workdir = repo
+            .workdir()
+            .ok_or_else(|| GitHfError::NotSupported("checkout requires a worktree".into()))?
+            .canonicalize()?;
+        let mut selected = Vec::new();
+        let mut modified = Vec::new();
+        for target in indexed_pointers(&repo, pathspecs)? {
+            let path = path_from_git(&target.path)?;
+            if !is_regular_file_in(&workdir, &path)? {
+                continue;
+            }
+            let dest = workdir.join(path);
+            if force || holds(&dest, &target.blob_data)? {
+                selected.push((target, dest));
+            } else {
+                modified.push(target.display());
+            }
         }
-        let dest = workdir.join(path);
-        if force || holds(&dest, &target.blob_data)? {
-            selected.push((target, dest));
-        } else {
-            summary.modified.push(target.display());
-        }
+        Ok(Self {
+            repo,
+            selected,
+            modified,
+            force,
+        })
     }
 
-    let missing: Vec<_> = selected
-        .iter()
-        .filter(|(target, _)| !cache.contains(&target.pointer))
-        .map(|(target, _)| target.display())
-        .collect();
-    if !missing.is_empty() {
-        return Err(GitHfError::NotCached(format!(
-            "{} files; run `git hf fetch` first:\n{}",
-            missing.len(),
-            list_paths(&missing)
-        )));
+    /// The distinct pointers of the selected files that are not available locally.
+    pub(crate) fn missing(&self, cache: &FileCache) -> Vec<XetPointer> {
+        let mut missing = BTreeMap::new();
+        for (target, _) in &self.selected {
+            if !cache.contains(&target.pointer) {
+                missing
+                    .entry(target.pointer.hash.as_str().to_owned())
+                    .or_insert_with(|| target.pointer.clone());
+            }
+        }
+        missing.into_values().collect()
     }
 
-    let mut written = Vec::new();
-    for (target, dest) in selected {
-        let expected = (!force).then_some(target.blob_data.as_slice());
-        match materialize(&cache.path(&target.pointer.hash), &dest, expected)? {
-            Some(cloned) => {
-                summary.files += 1;
-                summary.bytes += target.pointer.size;
-                summary.copied += usize::from(!cloned);
-                written.push((target, dest));
-            },
-            None => summary.modified.push(target.display()),
+    /// Replaces the selected files. Fails before replacing any if some file is not available locally.
+    pub(crate) fn apply(self, cache: &FileCache) -> Result<CheckoutSummary> {
+        let missing: Vec<_> = self
+            .selected
+            .iter()
+            .filter(|(target, _)| !cache.contains(&target.pointer))
+            .map(|(target, _)| target.display())
+            .collect();
+        if !missing.is_empty() {
+            return Err(GitHfError::NotCached(format!(
+                "{} files; run `git hf fetch` first:\n{}",
+                missing.len(),
+                list_paths(&missing)
+            )));
         }
+
+        let mut summary = CheckoutSummary {
+            modified: self.modified,
+            ..Default::default()
+        };
+        let mut written = Vec::new();
+        for (target, dest) in self.selected {
+            let expected = (!self.force).then_some(target.blob_data.as_slice());
+            match materialize(&cache.path(&target.pointer.hash), &dest, expected)? {
+                Some(cloned) => {
+                    summary.files += 1;
+                    summary.bytes += target.pointer.size;
+                    summary.copied += usize::from(!cloned);
+                    written.push((target, dest));
+                },
+                None => summary.modified.push(target.display()),
+            }
+        }
+        refresh_index(&self.repo, &written)?;
+        Ok(summary)
     }
-    refresh_index(&repo, &written)?;
-    Ok(summary)
 }
 
 /// Formats paths one per line, listing at most [`LISTED_PATHS`].
@@ -475,6 +519,36 @@ mod tests {
             assert_eq!(checkout(f.repo.path(), &f.cache, &[], false)?.files, 0);
             assert_eq!(fs::read(f.repo.path().join("real/b"))?, f.files[1].2.to_string().as_bytes());
         }
+        Ok(())
+    }
+
+    // Pull fetches what a plan reports missing, then applies the same plan.
+    #[test]
+    #[serial(env_var_write_read)]
+    fn plans_report_missing_files_and_keep_later_changes() -> anyhow::Result<()> {
+        let f = fixture(&[("a", b"alpha", false), ("b", b"beta", true), ("c", b"gamma", false)])?;
+        let (a, c) = (&f.files[0].2, &f.files[2].2);
+        fs::write(f.repo.path().join("copy-of-a"), a.to_string())?;
+        fs::write(f.repo.path().join("d"), a.to_string())?;
+        run_git_captured(f.repo.path(), "add", ["-A"])?;
+        run_git_captured(f.repo.path(), "commit", ["-m", "copies"])?;
+        fs::write(f.repo.path().join("c"), b"edited")?;
+
+        // Each missing file is listed once; modified files are not needed unless forced.
+        assert_eq!(CheckoutPlan::new(f.repo.path(), &[], false)?.missing(&f.cache), std::slice::from_ref(a));
+        assert_eq!(CheckoutPlan::new(f.repo.path(), &[], true)?.missing(&f.cache), [a.clone(), c.clone()]);
+
+        let plan = CheckoutPlan::new(f.repo.path(), &[], false)?;
+        let temp = f.cache.temp_path()?;
+        fs::write(&temp, b"alpha")?;
+        f.cache.publish(temp, &a.hash)?;
+        // A file changed after planning is left as it is.
+        fs::write(f.repo.path().join("d"), b"changed meanwhile")?;
+        let summary = plan.apply(&f.cache)?;
+        assert_eq!((summary.files, summary.modified), (3, vec!["c".to_string(), "d".to_string()]));
+        assert_eq!(fs::read(f.repo.path().join("copy-of-a"))?, b"alpha");
+        assert_eq!(fs::read(f.repo.path().join("d"))?, b"changed meanwhile");
+        assert_eq!(status(&f.repo)?, " M c\n M d\n");
         Ok(())
     }
 

@@ -11,6 +11,7 @@ use tempfile::TempPath;
 
 use crate::{HexHash, Result, XetPointer};
 
+#[derive(Clone)]
 pub(crate) struct FileCache {
     root: PathBuf,
 }
