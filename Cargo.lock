@@ -1802,7 +1802,6 @@ dependencies = [
  "bytes",
  "clap",
  "dirs",
- "git-url-parse",
  "git2",
  "git_extension_common",
  "rust-netrc",

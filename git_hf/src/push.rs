@@ -5,7 +5,9 @@
 //! records and xorbs. A staged xorb table lists only local xorbs not yet uploaded, so a referenced
 //! xorb in some table must be uploaded (a missing file is a local error); one in no table came from
 //! remote dedup or an earlier push. Pointers without a staged record are left to server-side
-//! validation.
+//! validation, unless local staging state says one may be unbacked: a failure marker naming its hash,
+//! or a staged shard that cannot be read. Staging state unrelated to the pushed pointers never
+//! blocks a push.
 //!
 //! Whole xorbs are uploaded, including chunks of unrelated files, then new shards registering just
 //! the pushed files. Nothing local changes until every upload succeeds, so a failed push retries in
@@ -14,12 +16,12 @@
 //! without the uploaded xorbs and registered files, then the xorb files are deleted. Records of
 //! unpushed files stay staged. Their xorbs may now exist only on the Hub that received this push.
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{BufRead, BufReader, Cursor, Write};
+use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use bytes::Bytes;
+use git_extension_common::process_wrapping::run_git_captured_with_input_and_output;
 use tokio::task::JoinSet;
 use xet_client::cas_client::Client;
 use xet_core_structures::merklehash::MerkleHash;
@@ -76,19 +78,25 @@ pub(crate) fn token_reference(updates: &[RefUpdate]) -> Option<String> {
 }
 
 /// Staged file records and locally written xorbs, read from every published staged shard.
-pub(crate) struct StagedIndex {
+struct StagedIndex {
     files: HashMap<MerkleHash, MDBFileInfo>,
     xorbs: HashMap<MerkleHash, MDBXorbInfo>,
+    /// Staged shards that could not be read; any of them may hold a pushed file's record.
+    unreadable: Vec<PathBuf>,
 }
 
 impl StagedIndex {
-    pub(crate) fn load(staging: &Path) -> Result<Self> {
+    fn load(staging: &Path) -> Result<Self> {
         let mut index = Self {
             files: HashMap::new(),
             xorbs: HashMap::new(),
+            unreadable: Vec::new(),
         };
         for path in staged_shards(staging)? {
-            let shard = read_shard(&path)?;
+            let Ok(shard) = read_shard(&path) else {
+                index.unreadable.push(path);
+                continue;
+            };
             for i in 0..shard.num_xorb() {
                 let xorb = shard.xorb(i).unwrap();
                 index.xorbs.entry(xorb.xorb_hash()).or_insert_with(|| MDBXorbInfo::from(xorb));
@@ -101,7 +109,7 @@ impl StagedIndex {
         Ok(index)
     }
 
-    pub(crate) fn contains_file(&self, hash: &MerkleHash) -> bool {
+    fn contains_file(&self, hash: &MerkleHash) -> bool {
         self.files.contains_key(hash)
     }
 }
@@ -127,56 +135,91 @@ fn read_shard(path: &Path) -> Result<MDBMinimalShard> {
     Ok(MDBMinimalShard::from_reader(&mut Cursor::new(std::fs::read(path)?), true, true)?)
 }
 
-/// Fails if an earlier clean session could not finalize and any pointer it returned is still
-/// unbacked. Resolution is by file hash, not by the current index: an unbacked pointer may be
-/// committed even after its path is deleted or replaced. Markers whose hashes are all staged are
-/// removed.
-pub(crate) fn check_failure_markers(staging: &Path, index: &StagedIndex) -> Result<()> {
+/// Fails if a pushed pointer without a staged record may be unbacked: an earlier clean session that
+/// could not finalize returned it, or an unreadable staged shard or marker may hold its record.
+/// Markers are matched by file hash, not by the current index: an unbacked pointer may be committed
+/// even after its path is deleted or replaced. Markers whose hashes are all staged are removed.
+fn check_unbacked(staging: &Path, index: &StagedIndex, pointers: &BTreeMap<MerkleHash, Vec<u8>>) -> Result<()> {
+    let missing: BTreeMap<_, _> = pointers.iter().filter(|(hash, _)| !index.contains_file(hash)).collect();
+    let mut unreadable = index.unreadable.clone();
+    let mut unbacked = BTreeMap::new();
     let entries = match std::fs::read_dir(staging.join(FINALIZE_FAILED_DIR)) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Ok(entries) => entries.collect::<std::io::Result<Vec<_>>>()?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(error) => return Err(error.into()),
     };
-    let mut unresolved = Vec::new();
     for entry in entries {
-        let path = entry?.path();
-        let pending: Vec<_> = read_failure_marker(&path)?
-            .into_iter()
-            .filter(|hash| !index.contains_file(hash))
-            .map(|hash| format!("  {}", hash.hex()))
-            .collect();
-        if pending.is_empty() {
-            std::fs::remove_file(&path)?;
+        let marker = entry.path();
+        let Ok(hashes) = read_failure_marker(&marker) else {
+            unreadable.push(marker);
+            continue;
+        };
+        if hashes.iter().all(|hash| index.contains_file(hash)) {
+            std::fs::remove_file(&marker)?;
             continue;
         }
-        unresolved.push(format!("{}\n  (marker: {})", pending.join("\n"), path.display()));
+        for hash in hashes {
+            if let Some(path) = missing.get(&hash) {
+                unbacked.entry(hash).or_insert_with(|| (*path, marker.clone()));
+            }
+        }
     }
-    if unresolved.is_empty() {
-        return Ok(());
+    if !unbacked.is_empty() {
+        let files: Vec<_> = unbacked
+            .iter()
+            .map(|(hash, (path, marker))| {
+                format!("  {} ({}; marker: {})", String::from_utf8_lossy(path), hash.hex(), marker.display())
+            })
+            .collect();
+        return Err(GitHfError::Staging(format!(
+            "an earlier `git add` could not save the data of these pushed files. Re-stage the same content with \
+             `git add --renormalize -- <paths>` and push again:\n{}\n\
+             If that content no longer exists, delete the markers; the Hub will then reject the push.",
+            files.join("\n")
+        )));
     }
-    Err(GitHfError::Staging(format!(
-        "an earlier `git add` could not save the data of files with these hashes. Re-stage the same content with \
-         `git add --renormalize -- <paths>` and push again:\n{}\n\
-         If that content no longer exists, delete the marker; the Hub will then reject any push containing those \
-         pointers.",
-        unresolved.join("\n")
-    )))
+    if !missing.is_empty() && !unreadable.is_empty() {
+        let paths: Vec<_> = unreadable.iter().map(|path| format!("  {}", path.display())).collect();
+        return Err(GitHfError::Staging(format!(
+            "pushed files have no readable staged record, and these staging files cannot be read, so their \
+             data may not be uploaded. Repair or delete them and push again:\n{}",
+            paths.join("\n")
+        )));
+    }
+    Ok(())
 }
 
-/// File hashes of the pointer blobs newly reachable from the pushed refs. Objects reachable from a
-/// remote ref's previous value are excluded when present locally: the server already holds that
-/// history. New refs include their full history. Deletions contribute nothing.
-pub(crate) fn pushed_pointers(wd: &Path, updates: &[RefUpdate]) -> Result<Vec<MerkleHash>> {
+/// Checks local staging state against the pointers newly reachable from the pushed refs, and plans
+/// their upload. Returns `None` when the push references no staged data, without reading staging
+/// unless it references pointers at all.
+pub(crate) fn plan_push(wd: &Path, staging: &Path, updates: &[RefUpdate]) -> Result<Option<UploadPlan>> {
+    let pointers = pushed_pointers(wd, updates)?;
+    if pointers.is_empty() {
+        return Ok(None);
+    }
+    let index = StagedIndex::load(staging)?;
+    check_unbacked(staging, &index, &pointers)?;
+    let plan = UploadPlan::new(staging, &index, &pointers)?;
+    Ok((!plan.files.is_empty()).then_some(plan))
+}
+
+/// File hashes of the pointer blobs newly reachable from the pushed refs, each with a path where Git
+/// first listed it. Objects reachable from a remote ref's previous value are excluded when present
+/// locally: the server already holds that history. New refs include their full history. Deletions
+/// contribute nothing.
+fn pushed_pointers(wd: &Path, updates: &[RefUpdate]) -> Result<BTreeMap<MerkleHash, Vec<u8>>> {
     let repo = git2::Repository::discover(wd)?;
     let odb = repo.odb()?;
+    // Revisions for `rev-list --stdin`. Include each pushed ref's new value; deletions send nothing.
     let mut revs = String::new();
     for update in updates.iter().filter(|u| !is_zero_oid(&u.local_oid)) {
-        revs.push_str(&update.local_oid);
-        revs.push('\n');
+        revs.push_str(&format!("{}\n", update.local_oid));
     }
     if revs.is_empty() {
-        return Ok(Vec::new());
+        return Ok(BTreeMap::new());
     }
+    // Exclude each updated ref's previous remote value: the remote already has that history. New refs
+    // have none, and a value missing locally can't be walked, so both are skipped.
     for update in updates.iter().filter(|u| !is_zero_oid(&u.remote_oid)) {
         if git2::Oid::from_str(&update.remote_oid).is_ok_and(|oid| odb.exists(oid)) {
             revs.push_str(&format!("^{}\n", update.remote_oid));
@@ -185,36 +228,32 @@ pub(crate) fn pushed_pointers(wd: &Path, updates: &[RefUpdate]) -> Result<Vec<Me
     // Larger blobs cannot be pointers; Git omits them before they are listed. Git's limit is
     // exclusive, while a pointer may be exactly MAX_POINTER_SIZE bytes.
     let filter = format!("--filter=blob:limit={}", MAX_POINTER_SIZE + 1);
-    let mut child = Command::new("git")
-        .current_dir(wd)
-        .args(["rev-list", "--objects", "--no-object-names", &filter, "--stdin"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
-    // rev-list reads all of stdin before writing, so this cannot deadlock.
-    child.stdin.take().unwrap().write_all(revs.as_bytes())?;
-    let mut hashes = Vec::new();
-    for line in BufReader::new(child.stdout.take().unwrap()).lines() {
-        let oid = git2::Oid::from_str(line?.trim())?;
+    let mut git = run_git_captured_with_input_and_output(wd, "rev-list", ["--objects", &filter, "--stdin"])?;
+    // rev-list reads all of stdin before writing, so this cannot deadlock. The handle is dropped to
+    // close stdin before waiting.
+    git.stdin()?.write_all(revs.as_bytes())?;
+    let (output, _) = git.wait_with_output()?;
+    let mut pointers = BTreeMap::new();
+    for line in output.split(|&b| b == b'\n') {
+        // `<oid>` for commits, `<oid> <path>` for trees and blobs. Paths are printed unquoted, so a
+        // path containing a newline continues on a line that is not an object; it is skipped.
+        let (oid, path) = match line.iter().position(|&b| b == b' ') {
+            Some(space) => (&line[..space], &line[space + 1..]),
+            None => (&line[..], &[][..]),
+        };
+        let Some(oid) = std::str::from_utf8(oid).ok().and_then(|oid| git2::Oid::from_str(oid).ok()) else {
+            continue;
+        };
         let (size, kind) = odb.read_header(oid)?;
         if kind != git2::ObjectType::Blob || size > MAX_POINTER_SIZE {
             continue;
         }
         // Malformed pointers cannot be uploaded; the server rejects them.
         if let Ok(Some(pointer)) = XetPointer::parse(odb.read(oid)?.data()) {
-            hashes.push(merkle_hash(&pointer.hash));
+            pointers.entry(merkle_hash(&pointer.hash)).or_insert_with(|| path.to_vec());
         }
     }
-    let status = child.wait()?;
-    if !status.success() {
-        return Err(GitHfError::CommandFailed {
-            reason: format!("git rev-list exited with {status}"),
-            source: None,
-        });
-    }
-    hashes.sort();
-    hashes.dedup();
-    Ok(hashes)
+    Ok(pointers)
 }
 
 fn merkle_hash(hash: &HexHash) -> MerkleHash {
@@ -231,8 +270,8 @@ pub(crate) struct UploadPlan {
 impl UploadPlan {
     /// Selects the staged files for `pointers`, and verifies their local xorbs exist before any
     /// network work.
-    pub(crate) fn new(staging: &Path, index: &StagedIndex, pointers: &[MerkleHash]) -> Result<Self> {
-        let files: Vec<_> = pointers.iter().filter_map(|hash| index.files.get(hash).cloned()).collect();
+    fn new(staging: &Path, index: &StagedIndex, pointers: &BTreeMap<MerkleHash, Vec<u8>>) -> Result<Self> {
+        let files: Vec<_> = pointers.keys().filter_map(|hash| index.files.get(hash).cloned()).collect();
         let mut xorbs = BTreeMap::new();
         for file in &files {
             for segment in &file.segments {
@@ -377,7 +416,10 @@ pub(crate) fn release_uploaded(staging: &Path, plan: &UploadPlan) -> Result<()> 
     let directory = staging.join("shards");
     // Shards published after the index was loaded are rescanned: they may list the same files.
     for path in staged_shards(staging)? {
-        let shard = read_shard(&path)?;
+        // An unreadable shard is left as is; pushes that may need its records fail until it is fixed.
+        let Ok(shard) = read_shard(&path) else {
+            continue;
+        };
         let mut kept = MDBInMemoryShard::default();
         let mut changed = false;
         for xorb in (0..shard.num_xorb()).map(|i| shard.xorb(i).unwrap()) {
@@ -489,10 +531,13 @@ mod tests {
         let client = client.unwrap_or_else(|| MemoryClient::new(ctx.clone()));
         let cache = tempfile::tempdir()?;
         let staging = staging(repo)?;
-        let index = StagedIndex::load(&staging)?;
-        check_failure_markers(&staging, &index)?;
-        let pointers = pushed_pointers(repo.path(), updates)?;
-        let plan = UploadPlan::new(&staging, &index, &pointers)?;
+        let Some(plan) = plan_push(repo.path(), &staging, updates)? else {
+            return Ok(Pushed {
+                summary: UploadSummary::default(),
+                client,
+                cache,
+            });
+        };
         let summary =
             ctx.runtime
                 .handle()
@@ -609,8 +654,7 @@ mod tests {
         let _cwd = CwdGuard::set(repo.path())?;
         let tip = commit_staged(&repo, &[("a", &binary(b'a', BINARY_LIMIT + 1))], "a")?;
         let staging = staging(&repo)?;
-        let index = StagedIndex::load(&staging)?;
-        let plan = UploadPlan::new(&staging, &index, &pushed_pointers(repo.path(), &[update(&tip, ZERO)])?)?;
+        let plan = plan_push(repo.path(), &staging, &[update(&tip, ZERO)])?.unwrap();
 
         let shared = crate::staging::lock_shared(&staging)?;
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -636,7 +680,7 @@ mod tests {
         let b_hash = file_hash(&repo.path().join("b"))?;
 
         let pointers = pushed_pointers(repo.path(), &[update(&second, &first)])?;
-        assert_eq!(pointers, [b_hash]);
+        assert_eq!(pointers, BTreeMap::from([(b_hash, b"b".to_vec())]));
         let deletion = RefUpdate {
             local_oid: ZERO.into(),
             ..update(ZERO, &second)
@@ -667,7 +711,8 @@ mod tests {
         fs::write(repo.path().join("pointer"), &pointer)?;
         run_git_captured(repo.path(), "add", ["pointer"])?;
         run_git_captured(repo.path(), "commit", ["-m", "max-size pointer"])?;
-        assert_eq!(pushed_pointers(repo.path(), &[update(&head(&repo)?, ZERO)])?, [hash]);
+        let pointers = pushed_pointers(repo.path(), &[update(&head(&repo)?, ZERO)])?;
+        assert_eq!(pointers, BTreeMap::from([(hash, b"pointer".to_vec())]));
         Ok(())
     }
 
@@ -711,9 +756,13 @@ mod tests {
             .unwrap()
             .downcast::<GitHfError>()?;
         let hash = crate::XetPointer::parse(&pointer)?.unwrap().hash;
-        assert!(matches!(&error, GitHfError::Staging(message) if message.contains(hash.as_str())));
+        assert!(
+            matches!(&error, GitHfError::Staging(message) if message.contains(&format!("  file ({hash};"))),
+            "{error}"
+        );
 
         // Deleting the path does not resolve the marker: the unbacked pointer is still in history.
+        let old_tip = tip;
         fs::remove_file(repo.path().join("file"))?;
         run_git_captured(repo.path(), "commit", ["-am", "delete"])?;
         let tip = head(&repo)?;
@@ -722,6 +771,8 @@ mod tests {
             .unwrap()
             .downcast::<GitHfError>()?;
         assert!(matches!(error, GitHfError::Staging(_)));
+        // A push whose new history excludes the pointer is not blocked.
+        assert_eq!(push(&repo, &[update(&tip, &old_tip)], None)?.summary, UploadSummary::default());
 
         // Re-staging the same content (as `git add --renormalize` would) clears the marker.
         let session = CleanSession::new()?;
@@ -730,6 +781,65 @@ mod tests {
         let pushed = push(&repo, &[update(&tip, ZERO)], None)?;
         assert_eq!(pushed.summary.files, 1);
         assert!(fs::read_dir(staging.join(FINALIZE_FAILED_DIR))?.next().is_none());
+        Ok(())
+    }
+
+    // Unreadable staging state blocks only pushes that reference pointers without a staged record.
+    #[test]
+    #[serial(env_var_write_read)]
+    fn unreadable_staging_blocks_only_unrecorded_pointers() -> anyhow::Result<()> {
+        let repo = TestRepo::new("main")?;
+        let _cwd = CwdGuard::set(repo.path())?;
+        let staging = staging(&repo)?;
+        let first = commit_staged(&repo, &[("a", &binary(b'a', BINARY_LIMIT + 1))], "a")?;
+        fs::write(staging.join("shards").join("broken.mdb"), b"not a shard")?;
+        fs::create_dir_all(staging.join(FINALIZE_FAILED_DIR))?;
+        fs::write(staging.join(FINALIZE_FAILED_DIR).join("broken"), b"not a hash\n")?;
+        // Every pushed pointer has a record, so the push proceeds.
+        let pushed = push(&repo, &[update(&first, ZERO)], None)?;
+        assert_eq!(pushed.summary.files, 1);
+
+        // A pointer with no record may be in the unreadable shard, so the push fails and names both files.
+        let foreign = XetPointer::new(hex_hash(MerkleHash::from([9, 9, 9, 9])), 1234).to_string();
+        fs::write(repo.path().join("remote-only"), foreign)?;
+        run_git_captured(repo.path(), "add", ["remote-only"])?;
+        run_git_captured(repo.path(), "commit", ["-m", "remote-only"])?;
+        let tip = head(&repo)?;
+        let error = push(&repo, &[update(&tip, &first)], Some(pushed.client.clone()))
+            .err()
+            .unwrap()
+            .downcast::<GitHfError>()?;
+        let GitHfError::Staging(message) = error else {
+            panic!("{error}");
+        };
+        for broken in [
+            staging.join("shards").join("broken.mdb"),
+            staging.join(FINALIZE_FAILED_DIR).join("broken"),
+        ] {
+            assert!(message.contains(&broken.display().to_string()), "{message}");
+        }
+
+        // Without the unreadable files, it is left to the server.
+        fs::remove_file(staging.join("shards").join("broken.mdb"))?;
+        fs::remove_file(staging.join(FINALIZE_FAILED_DIR).join("broken"))?;
+        assert_eq!(push(&repo, &[update(&tip, &first)], Some(pushed.client))?.summary, UploadSummary::default());
+        Ok(())
+    }
+
+    // A failure marker for pointers the push does not reference does not block it.
+    #[test]
+    #[serial(env_var_write_read)]
+    fn unrelated_failure_marker_does_not_block() -> anyhow::Result<()> {
+        let repo = TestRepo::new("main")?;
+        let _cwd = CwdGuard::set(repo.path())?;
+        let staging = staging(&repo)?;
+        let tip = commit_staged(&repo, &[("a", &binary(b'a', BINARY_LIMIT + 1))], "a")?;
+        let marker = staging.join(FINALIZE_FAILED_DIR).join("other");
+        fs::create_dir_all(marker.parent().unwrap())?;
+        fs::write(&marker, format!("{}\n", MerkleHash::from([5, 5, 5, 5]).hex()))?;
+        assert_eq!(push(&repo, &[update(&tip, ZERO)], None)?.summary.files, 1);
+        // The marker stays: its pointer is still unbacked, and a later push may reference it.
+        assert!(marker.is_file());
         Ok(())
     }
 }

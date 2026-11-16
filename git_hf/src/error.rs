@@ -42,7 +42,7 @@ pub enum GitHfError {
     InvalidGitConfig(String),
 
     #[error("Invalid Git URL: {0}")]
-    InvalidGitUrl(#[from] git_url_parse::GitUrlParseError),
+    InvalidGitUrl(String),
 
     #[error("Operation not supported: {0}")]
     NotSupported(String),
@@ -86,7 +86,7 @@ impl From<GitExtensionError> for GitHfError {
             GitExtensionError::NoGitRepo { path, source } => Self::NoGitRepo { path, source },
             GitExtensionError::GitError(error) => Self::GitError(error),
             GitExtensionError::InvalidGitConfig(message) => Self::InvalidGitConfig(message),
-            GitExtensionError::InvalidGitUrl(error) => Self::InvalidGitUrl(error),
+            GitExtensionError::InvalidGitUrl(error) => Self::InvalidGitUrl(error.to_string()),
             GitExtensionError::NotSupported(message) => Self::NotSupported(message),
             GitExtensionError::IO(error) => Self::IO(error),
             GitExtensionError::Internal(message) => Self::Internal(message),

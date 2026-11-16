@@ -204,7 +204,7 @@ fn git_push_runs_git_hf_from_an_existing_hook() -> Result<()> {
     let error = run_git_captured(repo.path(), "push", [remote_path, "main"])
         .unwrap_err()
         .to_string();
-    assert!(error.contains("can only be uploaded to a Hugging Face Hub repository"), "{error}");
+    assert!(error.contains(" is not a valid repository URL"), "{error}");
     let (remote_main, _) =
         run_git_captured_with_input_and_output(remote.path(), "rev-parse", ["main"])?.wait_with_output()?;
     let (local_parent, _) =
