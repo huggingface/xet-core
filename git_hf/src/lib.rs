@@ -2,6 +2,7 @@
 
 mod auth;
 mod cas_token;
+mod checkout;
 mod clean_session;
 mod cleaner;
 mod cli;
