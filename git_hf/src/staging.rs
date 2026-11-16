@@ -2,12 +2,16 @@
 //!
 //! Sessions and linked worktrees share content-addressed objects. SafeFileCreator publishes each
 //! object atomically; concurrent writes of the same hash are interchangeable. Its temporary files
-//! do not end in `.mdb`, so discovery never loads incomplete shards. No cross-process lock is needed.
-//! A future push classifies xorb dependencies from the staged shards, not from file presence. A
-//! session's shard lists only the xorbs that session wrote, so the union of all staged xorb tables
-//! is the set of local dependencies; each must exist under `xorbs/`, and a missing one is a local
+//! do not end in `.mdb`, so discovery never loads incomplete shards, and writers need no lock.
+//! Push classifies xorb dependencies from the staged shards, not from file presence. A session's
+//! shard lists only the xorbs that session wrote, so the union of all staged xorb tables is the set
+//! of local xorbs not yet uploaded; each must exist under `xorbs/`, and a missing one is a local
 //! error. File records may also reference xorbs absent from every table; those came from remote
-//! dedup data and are left to the server. Staging must not be deleted while a clean or push uses it.
+//! dedup data or were already uploaded, and are left to the server.
+//!
+//! Only push removes staged objects, under the exclusive [`lock_exclusive`]. Clean sessions hold
+//! [`lock_shared`] for their lifetime, because their dedup reads staged shards at any point.
+use std::fs::File;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,6 +36,39 @@ use xet_runtime::core::XetContext;
 use xet_runtime::file_utils::SafeFileCreator;
 
 use crate::GitHfError;
+
+/// Never removed: deleting a lock file others may hold open would split later lockers.
+const LOCK_FILE: &str = ".lock";
+
+// Opened for reading as well: a shared lock on Windows needs read access.
+fn open_lock(staging: &Path) -> std::io::Result<File> {
+    std::fs::create_dir_all(staging)?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(staging.join(LOCK_FILE))
+}
+
+/// Keeps staged objects from being removed until the returned file is closed.
+pub(crate) fn lock_shared(staging: &Path) -> std::io::Result<File> {
+    let file = open_lock(staging)?;
+    file.lock_shared()?;
+    Ok(file)
+}
+
+/// Excludes clean sessions until the returned file is closed, or returns `None` while one is running.
+/// Never waits: the running session may belong to the Git command that started this push, such as a
+/// commit whose post-commit hook pushes, so waiting could deadlock.
+pub(crate) fn try_lock_exclusive(staging: &Path) -> std::io::Result<Option<File>> {
+    let file = open_lock(staging)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    }
+}
 
 /// Read-only index of published repository shards; never subject to remote cache eviction.
 pub(crate) struct StagedDedupSource {

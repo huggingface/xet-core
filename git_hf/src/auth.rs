@@ -20,7 +20,6 @@
 //! and otherwise makes anonymous requests, which are enough to read public repositories. Steps 4 and 5
 //! aren't tied to a host, so they apply only to Hub hosts (`huggingface.co`, `hf.co`, the staging Hub,
 //! or the host of `HF_ENDPOINT`); a repository's `.gitattributes` can't send a Hub token elsewhere.
-#![cfg_attr(not(test), expect(dead_code, reason = "used by the clean filter and pre-push"))]
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -76,6 +75,7 @@ impl ResolvedCredential {
         self.helper.clone()
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "only tests read the source so far"))]
     pub fn source(&self) -> &CredentialSource {
         &self.source
     }
