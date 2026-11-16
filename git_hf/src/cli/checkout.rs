@@ -62,7 +62,9 @@ fn repo_relative(workdir: &Path, path: &Path) -> Result<Vec<u8>> {
             let mut rest = None;
             for (i, component) in components.iter().enumerate() {
                 prefix.push(component);
-                if prefix.canonicalize().is_ok_and(|prefix| prefix == canonical) {
+                // Only complete absolute paths: a bare Windows drive (`C:`) names that drive's current
+                // directory, which may be the worktree itself.
+                if prefix.is_absolute() && prefix.canonicalize().is_ok_and(|prefix| prefix == canonical) {
                     rest = Some(components[i + 1..].iter().collect::<PathBuf>());
                     break;
                 }
