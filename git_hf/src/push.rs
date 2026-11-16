@@ -15,6 +15,8 @@
 //! chunks available for dedup, and the uploaded data leaves staging: staged shards are rewritten
 //! without the uploaded xorbs and registered files, then the xorb files are deleted. Records of
 //! unpushed files stay staged. Their xorbs may now exist only on the Hub that received this push.
+//! While a clean session is running, the uploaded data stays staged instead: the push never waits
+//! for one, since it may belong to the Git command that started the push.
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -36,7 +38,7 @@ use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
 
 use crate::clean_session::{FINALIZE_FAILED_DIR, read_failure_marker};
 use crate::constants::GIT_HF_PROGRAM;
-use crate::staging::lock_exclusive;
+use crate::staging::try_lock_exclusive;
 use crate::{GitHfError, HexHash, MAX_POINTER_SIZE, Result, XetPointer};
 
 /// One line of pre-push input: `<local ref> <local oid> <remote ref> <remote oid>`.
@@ -239,7 +241,7 @@ fn pushed_pointers(wd: &Path, updates: &[RefUpdate]) -> Result<BTreeMap<MerkleHa
         // path containing a newline continues on a line that is not an object; it is skipped.
         let (oid, path) = match line.iter().position(|&b| b == b' ') {
             Some(space) => (&line[..space], &line[space + 1..]),
-            None => (&line[..], &[][..]),
+            None => (line, &[][..]),
         };
         let Some(oid) = std::str::from_utf8(oid).ok().and_then(|oid| git2::Oid::from_str(oid).ok()) else {
             continue;
@@ -408,9 +410,12 @@ fn cache_shards(shards: &[MDBInMemoryShard], cache: &Path) {
 
 /// Removes the plan's uploaded data from staging, after a successful [`upload`]. Shards are rewritten
 /// before xorbs are deleted, so an interruption never leaves a listed xorb missing; a leftover
-/// unlisted xorb file is harmless.
-pub(crate) fn release_uploaded(staging: &Path, plan: &UploadPlan) -> Result<()> {
-    let _lock = lock_exclusive(staging)?;
+/// unlisted xorb file is harmless. Returns `false`, removing nothing, while a clean session may
+/// still read staged data; the data then stays staged, which is safe.
+pub(crate) fn release_uploaded(staging: &Path, plan: &UploadPlan) -> Result<bool> {
+    let Some(_lock) = try_lock_exclusive(staging)? else {
+        return Ok(false);
+    };
     let xorbs: HashSet<_> = plan.xorbs.iter().map(|xorb| xorb.metadata.xorb_hash).collect();
     let files: HashSet<_> = plan.files.iter().map(|file| file.metadata.file_hash).collect();
     let directory = staging.join("shards");
@@ -450,7 +455,7 @@ pub(crate) fn release_uploaded(staging: &Path, plan: &UploadPlan) -> Result<()> 
             _ => {},
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 // Shards are uploaded without the footer and lookup tables, as in a normal upload session.
@@ -542,7 +547,7 @@ mod tests {
             ctx.runtime
                 .handle()
                 .block_on(upload(client.clone(), "default", &staging, &plan, cache.path()))?;
-        release_uploaded(&staging, &plan)?;
+        assert!(release_uploaded(&staging, &plan)?);
         Ok(Pushed { summary, client, cache })
     }
 
@@ -649,22 +654,19 @@ mod tests {
     // Staged data is not removed while a clean session may read it.
     #[test]
     #[serial(env_var_write_read)]
-    fn release_waits_for_clean_sessions() -> anyhow::Result<()> {
+    fn release_skips_while_clean_session_runs() -> anyhow::Result<()> {
         let repo = TestRepo::new("main")?;
         let _cwd = CwdGuard::set(repo.path())?;
         let tip = commit_staged(&repo, &[("a", &binary(b'a', BINARY_LIMIT + 1))], "a")?;
         let staging = staging(&repo)?;
         let plan = plan_push(repo.path(), &staging, &[update(&tip, ZERO)])?.unwrap();
 
+        // A running session keeps staged data in place instead of blocking the push.
         let shared = crate::staging::lock_shared(&staging)?;
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::scope(|scope| {
-            scope.spawn(|| sender.send(release_uploaded(&staging, &plan)).unwrap());
-            assert!(receiver.recv_timeout(std::time::Duration::from_millis(300)).is_err());
-            assert_eq!(count(&staging.join("xorbs")).unwrap(), 1);
-            drop(shared);
-            receiver.recv().unwrap()
-        })?;
+        assert!(!release_uploaded(&staging, &plan)?);
+        assert_eq!(count(&staging.join("xorbs"))?, 1);
+        drop(shared);
+        assert!(release_uploaded(&staging, &plan)?);
         assert_eq!(count(&staging.join("xorbs"))?, 0);
         Ok(())
     }

@@ -69,10 +69,15 @@ pub(super) fn run(_remote: &str, location: &OsStr) -> Result<()> {
         let summary = upload(cas.client, &ctx.config.data.default_prefix, &staging, &plan, &cache).await?;
         Ok::<_, GitHfError>((summary, plan, staging))
     })??;
-    release_uploaded(&staging, &plan)?;
     eprintln!(
         "{GIT_HF_PROGRAM}: uploaded {} xorbs ({} bytes) and registered {} files",
         summary.xorbs, summary.xorb_bytes, summary.files
     );
+    // The upload succeeded, so the push proceeds even if staging keeps the uploaded data.
+    match release_uploaded(&staging, &plan) {
+        Ok(true) => {},
+        Ok(false) => eprintln!("{GIT_HF_PROGRAM}: a `git add` is running, so the uploaded data stays staged"),
+        Err(error) => eprintln!("{GIT_HF_PROGRAM}: could not remove the uploaded data from staging: {error}"),
+    }
     Ok(())
 }

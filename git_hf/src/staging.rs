@@ -36,16 +36,17 @@ use xet_runtime::core::XetContext;
 use xet_runtime::file_utils::SafeFileCreator;
 
 use crate::GitHfError;
-use crate::constants::GIT_HF_PROGRAM;
 
 /// Never removed: deleting a lock file others may hold open would split later lockers.
 const LOCK_FILE: &str = ".lock";
 
+// Opened for reading as well: a shared lock on Windows needs read access.
 fn open_lock(staging: &Path) -> std::io::Result<File> {
     std::fs::create_dir_all(staging)?;
     std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
+        .read(true)
         .write(true)
         .open(staging.join(LOCK_FILE))
 }
@@ -57,14 +58,16 @@ pub(crate) fn lock_shared(staging: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
-/// Waits for running clean sessions, then excludes new ones until the returned file is closed.
-pub(crate) fn lock_exclusive(staging: &Path) -> std::io::Result<File> {
+/// Excludes clean sessions until the returned file is closed, or returns `None` while one is running.
+/// Never waits: the running session may belong to the Git command that started this push, such as a
+/// commit whose post-commit hook pushes, so waiting could deadlock.
+pub(crate) fn try_lock_exclusive(staging: &Path) -> std::io::Result<Option<File>> {
     let file = open_lock(staging)?;
-    if file.try_lock().is_err() {
-        eprintln!("{GIT_HF_PROGRAM}: waiting for a running `git add` to finish");
-        file.lock()?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
     }
-    Ok(file)
 }
 
 /// Read-only index of published repository shards; never subject to remote cache eviction.
