@@ -86,7 +86,23 @@ impl FromStrParseable for i64 {}
 impl FromStrParseable for f32 {}
 impl FromStrParseable for f64 {}
 impl FromStrParseable for String {}
-impl FromStrParseable for ByteSize {}
+
+/// `ByteSize` displays in rounded SI units (e.g. `1.235MB`), so `to_config_string` falls back to the exact
+/// byte count whenever the displayed form would not parse back to the same value.
+impl ParsableConfigValue for ByteSize {
+    fn parse_user_value(value: &str) -> Option<Self> {
+        value.parse::<ByteSize>().ok()
+    }
+
+    fn to_config_string(&self) -> String {
+        let display = self.to_string();
+        if display.parse::<ByteSize>().is_ok_and(|parsed| parsed == *self) {
+            display
+        } else {
+            self.as_u64().to_string()
+        }
+    }
+}
 
 /// Special handling for bool:
 /// - true: "1","true","yes","y","on"  -> true
@@ -445,7 +461,11 @@ mod tests {
             ByteSize::new(1000),
             ByteSize::new(1_000_000),
             ByteSize::new(8_000_000),
-            ByteSize::new(10_000_000_000)
+            ByteSize::new(10_000_000_000),
+            ByteSize::new(1_234_567),
+            ByteSize::new(1_000_000_001),
+            ByteSize::new(999_999),
+            ByteSize::new(u32::MAX as u64)
         );
     }
 
