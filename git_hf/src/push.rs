@@ -71,12 +71,18 @@ pub(crate) fn parse_updates(input: &[u8]) -> Result<Vec<RefUpdate>> {
         .collect()
 }
 
-/// The ref whose write permission authorizes the upload: the first updated ref, as a branch name.
-pub(crate) fn token_reference(updates: &[RefUpdate]) -> Option<String> {
+/// The revision whose write permission authorizes the upload. The Hub's write-token API takes a
+/// branch name or a PR ref (`refs/pr/N`), so the first updated branch or PR is used. A push of only
+/// tags or other refs falls back to `main`, the Hub's default branch.
+pub(crate) fn token_reference(updates: &[RefUpdate]) -> String {
     updates
         .iter()
-        .find(|u| !is_zero_oid(&u.local_oid))
-        .map(|u| u.remote_ref.strip_prefix("refs/heads/").unwrap_or(&u.remote_ref).to_owned())
+        .filter(|u| !is_zero_oid(&u.local_oid))
+        .find_map(|u| match u.remote_ref.strip_prefix("refs/heads/") {
+            Some(branch) => Some(branch.to_owned()),
+            None => u.remote_ref.starts_with("refs/pr/").then(|| u.remote_ref.clone()),
+        })
+        .unwrap_or_else(|| "main".to_owned())
 }
 
 /// Staged file records and locally written xorbs, read from every published staged shard.
@@ -327,13 +333,16 @@ pub(crate) async fn upload(
         let hash = xorb.metadata.xorb_hash;
         let (client, prefix, path) = (client.clone(), prefix.to_owned(), xorb_path(staging, &hash));
         tasks.spawn(async move {
-            let data = tokio::fs::read(&path).await?;
+            let mut data = tokio::fs::read(&path).await?;
             let xorb = XorbObject::deserialize(&mut Cursor::new(&data))?;
+            // Sent without the footer, as upload sessions do: the server rebuilds it from the chunks
+            // and checks the hash.
+            data.truncate(xorb.get_contents_length()? as usize);
             let object = SerializedXorbObject {
                 hash,
                 raw_num_bytes: xorb.uncompressed_range_length(0, xorb.info.num_chunks)? as u64,
                 num_chunks: xorb.info.num_chunks as usize,
-                footer_start: Some(xorb.get_contents_length()? as u64),
+                footer_start: None,
                 serialized_data: data,
             };
             Ok::<_, GitHfError>(client.upload_xorb(&prefix, object, None, permit).await?)
@@ -570,7 +579,11 @@ mod tests {
         let updates = parse_updates(input.as_bytes())?;
         assert_eq!(updates.len(), 2);
         assert_eq!(updates[1].remote_oid, "2222");
-        assert_eq!(token_reference(&updates), Some("a".into()));
+        assert_eq!(token_reference(&updates), "a");
+        let tag = format!("refs/tags/t 1111 refs/tags/t {ZERO}\n");
+        assert_eq!(token_reference(&parse_updates(tag.as_bytes())?), "main");
+        let tag_then_pr = format!("{tag}refs/heads/b 2222 refs/pr/3 {ZERO}\n");
+        assert_eq!(token_reference(&parse_updates(tag_then_pr.as_bytes())?), "refs/pr/3");
         assert!(parse_updates(b"too few fields\n").is_err());
         assert!(parse_updates(b"")?.is_empty());
         Ok(())

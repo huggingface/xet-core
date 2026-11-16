@@ -45,7 +45,7 @@ pub(super) fn run(_remote: &str, location: &OsStr) -> Result<()> {
     let credential = resolve_credential(&repo, &url, Operation::Upload, Interaction::Allowed)?;
     let ctx = XetContext::default()?;
     let session_id = UniqueId::new().to_string();
-    let reference = token_reference(&updates);
+    let reference = Some(token_reference(&updates));
     let runtime = ctx.runtime.clone();
     let (summary, plan, staging) = runtime.bridge_sync(async move {
         let cas = cas_token::connect(&ctx, &url, reference, Operation::Upload, credential.helper(), &session_id)
