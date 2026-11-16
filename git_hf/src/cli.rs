@@ -8,6 +8,7 @@ use crate::constants::GIT_HF_PROGRAM;
 
 mod filter_process;
 mod install;
+mod pre_push;
 mod uninstall;
 
 /// Native Xet V2 Git client
@@ -25,9 +26,9 @@ enum Command {
     /// Explain automatic selection of files for Xet storage.
     #[command(hide = true)]
     Track,
-    /// Register the required hf process filter.
+    /// Register the required hf process filter; --local also installs the pre-push hook.
     Install(InstallArgs),
-    /// Remove hf filter configuration.
+    /// Remove hf filter configuration; --local also removes the pre-push hook.
     Uninstall(UninstallArgs),
     /// Clone a V2 repository and materialize its Xet files.
     Clone(CloneArgs),
@@ -160,7 +161,7 @@ impl GitHfApp {
             Command::Checkout(_) => todo!(),
             Command::Pull(_) => todo!(),
             Command::FilterProcess(_) => filter_process::run(),
-            Command::PrePush(_) => todo!(),
+            Command::PrePush(args) => pre_push::run(&args.remote, &args.location),
         }
     }
 }
