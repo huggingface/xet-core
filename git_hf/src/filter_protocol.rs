@@ -118,7 +118,7 @@ impl<'a, R: AsyncRead + Unpin> Content<'a, R> {
 
     /// Appends content to `buffer` until it holds `limit` bytes or the content ends.
     pub(crate) async fn read_up_to(&mut self, buffer: &mut Vec<u8>, limit: usize) -> io::Result<()> {
-        let mut chunk = [0; 65536];
+        let mut chunk = vec![0; 65536];
         while buffer.len() < limit {
             let n = self.read(&mut chunk[..(limit - buffer.len()).min(65536)]).await?;
             if n == 0 {
@@ -131,7 +131,7 @@ impl<'a, R: AsyncRead + Unpin> Content<'a, R> {
 
     /// Reads and discards the rest of the content.
     pub(crate) async fn drain(&mut self) -> io::Result<()> {
-        let mut chunk = [0; 65536];
+        let mut chunk = vec![0; 65536];
         while self.read(&mut chunk).await? > 0 {}
         Ok(())
     }

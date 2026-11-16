@@ -54,7 +54,7 @@ impl<'a> SelectingFileCleaner<'a> {
         cleaner.add_data(&prefix).await?;
         let mut size = prefix.len() as u64;
         drop(prefix);
-        let mut buffer = [0; 65536];
+        let mut buffer = vec![0; 65536];
         loop {
             let n = input.read(&mut buffer).await?;
             if n == 0 {

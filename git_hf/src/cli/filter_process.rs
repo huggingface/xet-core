@@ -93,7 +93,7 @@ async fn serve_requests(
                 write_data(output, b"status=success\n").await?;
                 flush_packet(output).await?;
                 response.rewind()?;
-                let mut buffer = [0; 65516];
+                let mut buffer = vec![0; 65516];
                 loop {
                     let n = response.read(&mut buffer)?;
                     if n == 0 {
@@ -119,7 +119,7 @@ async fn serve_requests(
 }
 
 async fn copy_content(content: &mut Content<'_, impl AsyncRead + Unpin>, response: &mut impl Write) -> Result<()> {
-    let mut buffer = [0; 65536];
+    let mut buffer = vec![0; 65536];
     loop {
         let n = content.read(&mut buffer).await?;
         if n == 0 {
