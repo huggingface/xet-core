@@ -1,9 +1,14 @@
-//! Foundation for the native Xet V2 Git client. Transfer commands are not yet implemented.
+//! Native Xet V2 Git client.
 
 mod auth;
+mod clean_session;
+mod cleaner;
 mod cli;
 mod constants;
 mod error;
+mod filter_protocol;
+mod selection;
+mod staging;
 mod utils;
 
 pub use cli::GitHfApp;

@@ -1798,6 +1798,8 @@ name = "git_hf"
 version = "0.1.0-dev"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "bytes",
  "clap",
  "dirs",
  "git-url-parse",
@@ -1808,9 +1810,11 @@ dependencies = [
  "shellexpand",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "url",
  "xet-client",
  "xet-core-structures",
+ "xet-data",
  "xet-runtime",
  "xet_pointer_file",
 ]
