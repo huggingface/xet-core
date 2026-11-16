@@ -62,10 +62,11 @@ pub(crate) fn checkout(wd: &Path, cache: &FileCache, pathspecs: &[Vec<u8>], forc
     let mut summary = CheckoutSummary::default();
     let mut selected = Vec::new();
     for target in indexed_pointers(&repo, pathspecs)? {
-        let dest = workdir.join(path_from_git(&target.path)?);
-        if !is_regular_file_in(&workdir, &dest)? {
+        let path = path_from_git(&target.path)?;
+        if !is_regular_file_in(&workdir, &path)? {
             continue;
         }
+        let dest = workdir.join(path);
         if force || holds(&dest, &target.blob_data)? {
             selected.push((target, dest));
         } else {
@@ -170,15 +171,28 @@ fn path_from_git(path: &[u8]) -> Result<PathBuf> {
     }
 }
 
-/// Whether `dest` is a regular file reached without leaving `workdir` through a symlinked directory.
-fn is_regular_file_in(workdir: &Path, dest: &Path) -> Result<bool> {
-    match fs::symlink_metadata(dest) {
-        Ok(metadata) if metadata.is_file() => {},
-        Ok(_) => return Ok(false),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.into()),
+/// Whether `path` (relative to `workdir`) is a regular file under real directories. Like Git, never
+/// follows a symlinked directory: Git reports files behind one as deleted.
+fn is_regular_file_in(workdir: &Path, path: &Path) -> Result<bool> {
+    let mut current = workdir.to_path_buf();
+    let mut components = path.components().peekable();
+    while let Some(component) = components.next() {
+        current.push(component);
+        let metadata = match fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        let expected = if components.peek().is_some() {
+            metadata.is_dir()
+        } else {
+            metadata.is_file()
+        };
+        if !expected {
+            return Ok(false);
+        }
     }
-    Ok(dest.parent().unwrap().canonicalize()?.starts_with(workdir))
+    Ok(true)
 }
 
 /// Whether `path` holds exactly `data`. Reads the file only when the sizes match.
@@ -233,11 +247,15 @@ fn refresh_index(repo: &git2::Repository, written: &[(Target, PathBuf)]) -> Resu
         latest = latest.max(metadata.modified()?);
         stats.insert(target.path.as_slice(), (target.blob, metadata));
     }
-    // Git rechecks the content of an entry whose file is not older than the index, which would run
-    // the clean filter again. Timestamps may have one-second granularity.
+    // Git rechecks the content of an entry whose file is not older than the index, to the second,
+    // which would run the clean filter again.
     wait_past_second_of(latest);
 
     let mut index = repo.index()?;
+    let index_path = index
+        .path()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| GitHfError::Internal("The repository index has no file".into()))?;
     index.read(true)?;
     let updated: Vec<_> = index
         .iter()
@@ -253,13 +271,23 @@ fn refresh_index(repo: &git2::Repository, written: &[(Target, PathBuf)]) -> Resu
     for entry in &updated {
         index.add(entry)?;
     }
-    index.write()?;
-    Ok(())
+    // File timestamps come from the filesystem's clock, which can lag the system clock (Linux uses a
+    // coarse clock), so the index may still be stamped within the files' second.
+    loop {
+        index.write()?;
+        if second_of(fs::metadata(&index_path)?.modified()?) > second_of(latest) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn second_of(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
 fn wait_past_second_of(time: SystemTime) {
-    let second = time.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let next = UNIX_EPOCH + Duration::from_secs(second + 1);
+    let next = UNIX_EPOCH + Duration::from_secs(second_of(time) + 1);
     if let Ok(remaining) = next.duration_since(SystemTime::now()) {
         std::thread::sleep(remaining);
     }
@@ -295,9 +323,9 @@ mod tests {
     use git_extension_common::process_wrapping::{run_git_captured, run_git_captured_with_input_and_output};
     use git_extension_common::test_utils::TestRepo;
     use serial_test::serial;
-    use xet_core_structures::merklehash::MerkleHash;
 
     use super::*;
+    use crate::HexHash;
 
     struct Fixture {
         repo: TestRepo,
@@ -311,7 +339,8 @@ mod tests {
         let cache = FileCache::new(&repo.path().join(".git"))?;
         let mut committed = Vec::new();
         for (i, (path, data, cached)) in files.iter().enumerate() {
-            let pointer = XetPointer::new(MerkleHash::from([i as u64 + 1; 4]), data.len() as u64);
+            let pointer =
+                XetPointer::new(HexHash::from_hex(&format!("{:02x}", i + 1).repeat(32)).unwrap(), data.len() as u64);
             let dest = repo.path().join(path);
             fs::create_dir_all(dest.parent().unwrap())?;
             fs::write(&dest, pointer.to_string())?;
@@ -417,6 +446,16 @@ mod tests {
         fs::remove_file(f.repo.path().join("dir2/b"))?;
         assert_eq!(checkout(f.repo.path(), &f.cache, &[], false)?.files, 0);
         assert!(!f.repo.path().join("dir2/b").exists());
+
+        // Like Git, never writes through a symlinked directory, even one inside the worktree.
+        #[cfg(unix)]
+        {
+            fs::rename(f.repo.path().join("dir2"), f.repo.path().join("real"))?;
+            fs::write(f.repo.path().join("real/b"), f.files[1].2.to_string())?;
+            std::os::unix::fs::symlink("real", f.repo.path().join("dir2"))?;
+            assert_eq!(checkout(f.repo.path(), &f.cache, &[], false)?.files, 0);
+            assert_eq!(fs::read(f.repo.path().join("real/b"))?, f.files[1].2.to_string().as_bytes());
+        }
         Ok(())
     }
 
