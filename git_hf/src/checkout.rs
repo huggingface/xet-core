@@ -118,7 +118,11 @@ fn indexed_pointers(repo: &git2::Repository, pathspecs: &[Vec<u8>]) -> Result<Ve
     let odb = repo.odb()?;
     let mut targets = Vec::new();
     let mut invalid = Vec::new();
+    let mut matched = vec![false; pathspecs.len()];
     for entry in index.iter() {
+        for (spec, matched) in pathspecs.iter().zip(&mut matched) {
+            *matched |= matches(&entry.path, spec);
+        }
         if entry.flags & STAGE_MASK != 0
             || entry.mode & 0o170000 != 0o100000
             || entry.flags_extended & SKIP_WORKTREE != 0
@@ -142,6 +146,11 @@ fn indexed_pointers(repo: &git2::Repository, pathspecs: &[Vec<u8>]) -> Result<Ve
             Err(error) => invalid.push(format!("{}: {error}", String::from_utf8_lossy(&entry.path))),
         }
     }
+    // Like Git, a pathspec must name some index entry, matched by exact bytes even when the
+    // filesystem ignores case: a typo or wrong case fails instead of silently selecting nothing.
+    if let Some(i) = matched.iter().position(|matched| !matched) {
+        return Err(GitHfError::UnmatchedPathspec(String::from_utf8_lossy(&pathspecs[i]).into_owned()));
+    }
     if !invalid.is_empty() {
         return Err(GitHfError::NotSupported(format!(
             "the index contains pointers git-hf cannot check out:\n{}",
@@ -152,10 +161,12 @@ fn indexed_pointers(repo: &git2::Repository, pathspecs: &[Vec<u8>]) -> Result<Ve
 }
 
 fn is_selected(path: &[u8], pathspecs: &[Vec<u8>]) -> bool {
-    pathspecs.is_empty()
-        || pathspecs.iter().any(|spec| {
-            spec.is_empty() || path == spec.as_slice() || (path.starts_with(spec) && path[spec.len()] == b'/')
-        })
+    pathspecs.is_empty() || pathspecs.iter().any(|spec| matches(path, spec))
+}
+
+/// Whether `spec` names `path` or a directory containing it; the empty spec is the worktree root.
+fn matches(path: &[u8], spec: &[u8]) -> bool {
+    spec.is_empty() || path == spec || (path.starts_with(spec) && path[spec.len()] == b'/')
 }
 
 fn path_from_git(path: &[u8]) -> Result<PathBuf> {
@@ -441,6 +452,14 @@ mod tests {
         assert_eq!(fs::read(f.repo.path().join("dir/a"))?, b"alpha");
         assert_eq!(fs::read(f.repo.path().join("dir2/b"))?, f.files[1].2.to_string().as_bytes());
         assert_eq!(fs::read(f.repo.path().join("dir/skipped"))?, f.files[2].2.to_string().as_bytes());
+
+        // Like Git, a pathspec naming no index entry fails, including one differing only in case.
+        for spec in [&b"DIR"[..], b"dir/missing", b"di"] {
+            let error = checkout(f.repo.path(), &f.cache, &[b"dir".to_vec(), spec.to_vec()], false).unwrap_err();
+            assert!(matches!(&error, GitHfError::UnmatchedPathspec(s) if s.as_bytes() == spec), "{error}");
+        }
+        // A skip-worktree entry still counts as a match, though it is never replaced.
+        assert_eq!(checkout(f.repo.path(), &f.cache, &[b"dir/skipped".to_vec()], false)?.files, 0);
 
         // A deleted file stays deleted.
         fs::remove_file(f.repo.path().join("dir2/b"))?;

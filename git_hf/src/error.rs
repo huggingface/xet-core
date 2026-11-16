@@ -47,6 +47,9 @@ pub enum GitHfError {
     #[error("Xet data is not cached: {0}")]
     NotCached(String),
 
+    #[error("pathspec '{0}' did not match any file known to Git")]
+    UnmatchedPathspec(String),
+
     #[error("Operation not supported: {0}")]
     NotSupported(String),
 

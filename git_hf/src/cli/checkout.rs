@@ -10,12 +10,11 @@ use crate::{GitHfError, Result};
 /// Reconstructs the files of indexed pointers under `paths` (all when empty) from local Xet data,
 /// without network access.
 pub(super) fn run(paths: &[PathBuf], force: bool) -> Result<()> {
-    let wd = std::env::current_dir()?.canonicalize()?;
+    let wd = std::env::current_dir()?;
     let repo = GitRepo::open(&wd)?;
     let workdir = repo
         .worktree_dir()?
-        .ok_or_else(|| GitHfError::NotSupported("checkout requires a worktree".into()))?
-        .canonicalize()?;
+        .ok_or_else(|| GitHfError::NotSupported("checkout requires a worktree".into()))?;
     let pathspecs = paths
         .iter()
         .map(|path| repo_relative(&workdir, &wd.join(path)))
@@ -38,7 +37,10 @@ pub(super) fn run(paths: &[PathBuf], force: bool) -> Result<()> {
 }
 
 /// `path` relative to the worktree root, as Git spells paths. Like Git, resolves `.` and `..`
-/// lexically without following symlinks, so a path names index entries whether or not its file exists.
+/// lexically, and follows no symlink inside the worktree, so a path names index entries whether or
+/// not its file exists. A path that reaches the worktree another way, through a symlinked directory
+/// or another spelling of it (such as a Windows `\\?\` prefix), is matched by resolving its leading
+/// components until they name the worktree.
 fn repo_relative(workdir: &Path, path: &Path) -> Result<Vec<u8>> {
     let mut resolved = PathBuf::new();
     for component in path.components() {
@@ -50,9 +52,24 @@ fn repo_relative(workdir: &Path, path: &Path) -> Result<Vec<u8>> {
             component => resolved.push(component),
         }
     }
-    let relative = resolved
-        .strip_prefix(workdir)
-        .map_err(|_| GitHfError::NotSupported(format!("{} is outside the worktree", resolved.display())))?;
+    let outside = || GitHfError::NotSupported(format!("{} is outside the worktree", resolved.display()));
+    let relative = match resolved.strip_prefix(workdir) {
+        Ok(relative) => relative.to_path_buf(),
+        Err(_) => {
+            let canonical = workdir.canonicalize()?;
+            let components: Vec<_> = resolved.components().collect();
+            let mut prefix = PathBuf::new();
+            let mut rest = None;
+            for (i, component) in components.iter().enumerate() {
+                prefix.push(component);
+                if prefix.canonicalize().is_ok_and(|prefix| prefix == canonical) {
+                    rest = Some(components[i + 1..].iter().collect::<PathBuf>());
+                    break;
+                }
+            }
+            rest.ok_or_else(outside)?
+        },
+    };
     let mut spec = Vec::new();
     for component in relative.components() {
         if !spec.is_empty() {
@@ -94,6 +111,21 @@ mod tests {
         std::fs::create_dir(workdir.join("target"))?;
         std::os::unix::fs::symlink("target", workdir.join("link"))?;
         assert_eq!(repo_relative(&workdir, &workdir.join("link/file"))?, b"link/file");
+        Ok(())
+    }
+
+    // A path typed through a symlink to the worktree still names its index entries.
+    #[cfg(unix)]
+    #[test]
+    fn worktree_reached_through_a_symlink() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let workdir = dir.path().canonicalize()?.join("real");
+        std::fs::create_dir_all(workdir.join("dir"))?;
+        std::os::unix::fs::symlink(&workdir, dir.path().join("alias"))?;
+        let alias = dir.path().join("alias");
+        assert_eq!(repo_relative(&workdir, &alias.join("dir/deleted"))?, b"dir/deleted");
+        assert_eq!(repo_relative(&workdir, &alias)?, b"");
+        assert!(repo_relative(&workdir, &dir.path().join("elsewhere")).is_err());
         Ok(())
     }
 }
