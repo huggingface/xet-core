@@ -7,6 +7,7 @@ use crate::Result;
 use crate::constants::GIT_HF_PROGRAM;
 
 mod checkout;
+mod clone;
 mod fetch;
 mod filter_process;
 mod install;
@@ -87,7 +88,7 @@ struct UninstallArgs {
 
 #[derive(Debug, Args)]
 struct CloneArgs {
-    /// Arguments for git clone; Git will validate its options when execution is implemented.
+    /// Arguments for git clone, passed to it unchanged.
     #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
     git_args: Vec<OsString>,
 }
@@ -159,7 +160,7 @@ impl GitHfApp {
             Command::Track => todo!(),
             Command::Install(args) => install_command(args),
             Command::Uninstall(args) => uninstall_command(args),
-            Command::Clone(_) => todo!(),
+            Command::Clone(args) => clone::run(&args.git_args),
             Command::Fetch(args) => fetch::run(args.remote.as_deref(), &args.revision),
             Command::Checkout(args) => checkout::run(&args.paths, args.force),
             Command::Pull(args) => pull::run(args.remote.as_deref(), args.force),

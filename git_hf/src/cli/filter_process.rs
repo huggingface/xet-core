@@ -4,7 +4,9 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
 use crate::clean_session::CleanSession;
 use crate::cleaner::SelectingFileCleaner;
+use crate::constants::{CLONE_REPORT_ENV, GIT_HF_PROGRAM};
 use crate::filter_protocol::{Content, flush_packet, headers, write_data};
+use crate::utils::path_to_bytes;
 use crate::{GitHfError, Result};
 
 fn protocol(message: &str) -> GitHfError {
@@ -12,6 +14,7 @@ fn protocol(message: &str) -> GitHfError {
 }
 
 pub(super) fn run() -> Result<()> {
+    report_worktree_for_clone();
     let session = CleanSession::new()?;
     let runtime = session.ctx.runtime.clone();
     runtime.bridge_sync(async move {
@@ -19,6 +22,25 @@ pub(super) fn run() -> Result<()> {
         let mut output = BufWriter::new(tokio::io::stdout());
         serve(&mut input, &mut output, session).await
     })?
+}
+
+/// When Git starts the filter for the checkout of `git hf clone`, appends the worktree root (where Git
+/// runs filters) to the file clone named, NUL-terminated, so clone learns where the repository is. The
+/// file is not created here: only clone's own file is written. Best-effort: a failure must not break
+/// Git's checkout, and clone then reports that it could not set up the repository.
+fn report_worktree_for_clone() {
+    let Some(report) = std::env::var_os(CLONE_REPORT_ENV) else {
+        return;
+    };
+    let written = std::env::current_dir().map_err(GitHfError::from).and_then(|wd| {
+        let mut entry = path_to_bytes(&wd)?;
+        entry.push(0);
+        std::fs::OpenOptions::new().append(true).open(report)?.write_all(&entry)?;
+        Ok(())
+    });
+    if let Err(error) = written {
+        eprintln!("{GIT_HF_PROGRAM}: could not report this clone's location to {GIT_HF_PROGRAM} clone: {error}");
+    }
 }
 
 async fn serve(
@@ -133,6 +155,32 @@ async fn copy_content(content: &mut Content<'_, impl AsyncRead + Unpin>, respons
 mod tests {
     use super::*;
     use crate::filter_protocol::block_on;
+
+    // Started by clone, the filter appends its working directory to clone's report; otherwise, or when
+    // the report file is missing, it writes nothing.
+    #[test]
+    #[serial_test::serial(env_var_write_read)]
+    fn reports_the_worktree_only_to_an_existing_report() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let _cwd = xet_runtime::utils::CwdGuard::set(dir.path())?;
+        let report = dir.path().join("report");
+        let missing = dir.path().join("missing");
+        report_worktree_for_clone();
+        assert!(!report.exists());
+        {
+            let _env = xet_runtime::utils::EnvVarGuard::set(CLONE_REPORT_ENV, &missing);
+            report_worktree_for_clone();
+            assert!(!missing.exists());
+        }
+        std::fs::write(&report, b"")?;
+        let _env = xet_runtime::utils::EnvVarGuard::set(CLONE_REPORT_ENV, &report);
+        report_worktree_for_clone();
+        report_worktree_for_clone();
+        let mut entry = path_to_bytes(&std::env::current_dir()?)?;
+        entry.push(0);
+        assert_eq!(std::fs::read(&report)?, [entry.clone(), entry].concat());
+        Ok(())
+    }
 
     fn write(wire: &mut Vec<u8>, data: &[u8]) {
         block_on(write_data(wire, data)).unwrap();

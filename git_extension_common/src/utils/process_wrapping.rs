@@ -9,6 +9,31 @@ use crate::errors::{GitExtensionError, Result};
 // This mod implements utilities to invoke commands through child processes from any program, and
 // exposes special helpers to invoke git commands.
 
+/// Run `git` with `args` in `working_dir`, attached to this process's terminal as if the user typed
+/// it: Git's output and progress appear as it runs, and it may prompt. `envs` are set for Git and any
+/// program it runs, such as filters and hooks. Use for long or interactive commands such as
+/// `git clone`.
+///
+/// Return `Ok(())` if Git exits successfully; the underlying I/O error if spawning or waiting fails;
+/// otherwise `Err(GitExtensionError::CommandFailed(_))` with the exit status, since Git has already
+/// printed why it failed. The arguments are not repeated in the error, as they may hold credentials.
+pub fn run_git<P, I, S>(working_dir: P, args: I, envs: &[(&str, &OsStr)]) -> Result<()>
+where
+    P: AsRef<Path>,
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let status = Command::new(GIT_EXECUTABLE)
+        .current_dir(working_dir)
+        .args(args)
+        .envs(envs.iter().copied())
+        .status()?;
+    if !status.success() {
+        return Err(GitExtensionError::cmd_failed(format!("git exited with {status}"), None));
+    }
+    Ok(())
+}
+
 /// Run a Git command as a child process by setting the current working directory to `working_dir`.
 /// This function doesn't allow the parent process to send data to the child.
 ///
@@ -223,7 +248,27 @@ mod tests {
 
     use anyhow::Result;
 
-    use super::{CapturedCommand, run_program_captured, run_program_captured_with_input_and_output};
+    use super::{CapturedCommand, run_git, run_program_captured, run_program_captured_with_input_and_output};
+    use crate::errors::GitExtensionError;
+
+    #[test]
+    fn test_run_git_passes_environment_and_reports_the_exit_status() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let marker = dir.path().join("marker");
+        let alias = "!f() { echo \"$MARKER_VALUE\" > \"$MARKER_PATH\"; }; f";
+        let envs = [
+            ("MARKER_VALUE", std::ffi::OsStr::new("set")),
+            ("MARKER_PATH", marker.as_os_str()),
+        ];
+        run_git(dir.path(), ["-c", &format!("alias.mark={alias}"), "mark"], &envs)?;
+        assert_eq!(std::fs::read_to_string(&marker)?, "set\n");
+        let error = run_git(dir.path(), ["rev-parse", "--verify", "no-such-ref"], &[]).unwrap_err();
+        let GitExtensionError::CommandFailed { reason, .. } = &error else {
+            panic!("{error}");
+        };
+        assert!(reason.starts_with("git exited with"), "{reason}");
+        Ok(())
+    }
 
     #[cfg(unix)]
     #[test]

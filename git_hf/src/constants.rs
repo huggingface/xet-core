@@ -1,5 +1,9 @@
 pub const GIT_HF_PROGRAM: &str = "git-hf";
 
+/// Environment variable naming the file in which `git hf clone` collects where the filter ran, so it
+/// learns the new worktree's location from the filter Git starts for its checkout.
+pub const CLONE_REPORT_ENV: &str = "GIT_HF_CLONE_REPORT";
+
 /// Environment variable holding a Hugging Face token.
 pub const HF_TOKEN_ENV: &str = "HF_TOKEN";
 /// Older name for [`HF_TOKEN_ENV`], used when it is unset or blank.

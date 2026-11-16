@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use git_extension_common::process_wrapping::{check_command_output, run_git_captured_with_input_and_output};
 
@@ -19,6 +19,36 @@ pub(crate) fn git_get_all_config_values(wd: &Path, loc_profile: &str, key: &str)
         .split_inclusive(|&byte| byte == 0)
         .map(|value| value.strip_suffix(&[0]).unwrap_or(value).to_vec())
         .collect())
+}
+
+/// A path as bytes: its native bytes on Unix, UTF-8 elsewhere.
+pub(crate) fn path_to_bytes(path: &Path) -> Result<Vec<u8>> {
+    #[cfg(unix)]
+    {
+        Ok(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()).to_vec())
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(path
+            .to_str()
+            .ok_or_else(|| crate::GitHfError::NotSupported(format!("non-UTF-8 path {}", path.display())))?
+            .as_bytes()
+            .to_vec())
+    }
+}
+
+/// The inverse of [`path_to_bytes`].
+pub(crate) fn path_from_bytes(bytes: &[u8]) -> Result<PathBuf> {
+    #[cfg(unix)]
+    {
+        Ok(PathBuf::from(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(bytes)))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(PathBuf::from(
+            std::str::from_utf8(bytes).map_err(|_| crate::GitHfError::Internal("Non-UTF-8 path".into()))?,
+        ))
+    }
 }
 
 /// Whether Git selects a repository for this directory, following the same rules as `git config --local`.

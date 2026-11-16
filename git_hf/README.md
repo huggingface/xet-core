@@ -115,7 +115,7 @@ Run `git-hf --help`, or put the binary on PATH and use `git hf --help`.
 | `track` | Explain automatic file selection; no manual tracking is needed. |
 | `install [--local \| --global \| --system]` | Register the required `hf` filter; default scope is global. `--local` also installs the pre-push hook. |
 | `uninstall [--local \| --global \| --system \| --all]` | Remove the hf filter section; default scope is global. `--local` also removes the pre-push hook. |
-| `clone <git-clone-args...>` | Accept Git clone options, repository, and destination as an opaque argument list. |
+| `clone <git-clone-args...>` | Run `git clone`; for a repository that uses the `hf` filter, also register the filter and pre-push hook locally and download and reconstruct its Xet files as `pull` does. |
 | `fetch [remote] [revision]` | Download the Xet files of a local revision (default HEAD) into the repository's cache, skipping files already cached; do not fetch Git refs or change the worktree. |
 | `checkout [--force] [paths...]` | Reconstruct the files of indexed Xet pointers from local Xet data, without network access; `--force` also replaces modified files. |
 | `pull [remote] [--force]` | Download the Xet files the current checkout is missing (contacting the Hub only if some are), then reconstruct them as `checkout` does; `--force` also replaces modified files. Does not run `git pull` or change Git refs. |
@@ -126,11 +126,18 @@ Internal commands are hidden from top-level help but have their own `--help`.
 Use `--` before paths beginning with `-`. Paths and clone locations retain native
 OS strings; they are not interpolated into shell commands.
 
-Clone retains its original argument list, including `--` and non-UTF-8 paths,
-for eventual forwarding to Git. `clone --help` and `clone --version` currently
-show git-hf's help/version. Git option validation, destination discovery, and
-checkout/materialization policy for options such as `--bare` and `--no-checkout`
-will be handled when clone execution is implemented.
+Clone runs `git clone` with its arguments unchanged, including non-UTF-8 paths,
+and with the `hf` filter registered for that command only, so the checkout writes
+pointer files unchanged even without a global installation. Git starts the filter
+only for a repository whose attributes use it, and the filter reports that
+worktree's location; this includes submodules checked out with
+`--recurse-submodules`. Clone then sets up each reported worktree: it registers the
+filter and the pre-push hook there, as `git hf install --local` does, and downloads
+and reconstructs its Xet files as `pull` does. If that fails, the pointer checkout
+stays in place and clone lists the worktrees to retry with `git hf install --local`
+and `git hf pull`. A repository that does not use the filter,
+or a clone that checks nothing out (such as `--no-checkout` or `--bare`), is left as
+`git clone` made it. `clone --help` and `clone --version` show git-hf's help/version.
 
 ## Pointer API
 
