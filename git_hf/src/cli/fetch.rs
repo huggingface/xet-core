@@ -6,9 +6,9 @@ use xet_runtime::utils::UniqueId;
 
 use crate::auth::resolve_credential;
 use crate::constants::GIT_HF_PROGRAM;
-use crate::fetch::{fetch_files, pointers_at};
+use crate::fetch::{FetchSummary, fetch_files, pointers_at};
 use crate::file_cache::FileCache;
-use crate::{GitHfError, Result, cas_token};
+use crate::{GitHfError, Result, XetPointer, cas_token};
 
 /// Downloads the Xet files referenced by `revision` that are not yet cached. Contacts the Hub only
 /// when some file is missing.
@@ -24,6 +24,23 @@ pub(super) fn run(remote: Option<&str>, revision: &str) -> Result<()> {
         return Ok(());
     }
 
+    let summary = download(&repo, remote, &cache, missing)?;
+    eprintln!(
+        "{GIT_HF_PROGRAM}: fetched {} Xet files ({} bytes); {} were already cached",
+        summary.files,
+        summary.bytes,
+        total - summary.files
+    );
+    Ok(())
+}
+
+/// Downloads `missing` into `cache` from the CAS of `remote` (the selected remote when `None`).
+pub(super) fn download(
+    repo: &GitRepo,
+    remote: Option<&str>,
+    cache: &FileCache,
+    missing: Vec<XetPointer>,
+) -> Result<FetchSummary> {
     let url = match remote {
         Some(remote) => repo.remote_name_to_url(remote)?,
         None => repo.remote_url()?,
@@ -35,11 +52,12 @@ pub(super) fn run(remote: Option<&str>, revision: &str) -> Result<()> {
         Scheme::Ssh | Scheme::GitSsh => Interaction::Allowed,
         _ => Interaction::Never,
     };
-    let credential = resolve_credential(&repo, &url, Operation::Download, interaction)?;
+    let credential = resolve_credential(repo, &url, Operation::Download, interaction)?;
     let ctx = XetContext::default()?;
     let session_id = UniqueId::new().to_string();
+    let cache = cache.clone();
     let runtime = ctx.runtime.clone();
-    let summary = runtime.bridge_sync(async move {
+    runtime.bridge_sync(async move {
         // Read tokens are repository-wide, so the Hub's default revision suffices.
         let cas = cas_token::connect(&ctx, &url, None, Operation::Download, credential.helper(), &session_id)
             .await
@@ -49,12 +67,5 @@ pub(super) fn run(remote: Option<&str>, revision: &str) -> Result<()> {
             })?;
         let session = FileDownloadSession::from_client(&ctx, cas.client, None);
         fetch_files(&ctx, session, &cache, missing).await
-    })??;
-    eprintln!(
-        "{GIT_HF_PROGRAM}: fetched {} Xet files ({} bytes); {} were already cached",
-        summary.files,
-        summary.bytes,
-        total - summary.files
-    );
-    Ok(())
+    })?
 }

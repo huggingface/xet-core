@@ -11,6 +11,7 @@ mod fetch;
 mod filter_process;
 mod install;
 mod pre_push;
+mod pull;
 mod uninstall;
 
 /// Native Xet V2 Git client
@@ -113,7 +114,7 @@ struct CheckoutArgs {
 struct PullArgs {
     /// Git remote to use; defaults to the repository's selected remote.
     remote: Option<String>,
-    /// Permit replacement of modified tracked regular files during checkout.
+    /// Also replace files that no longer hold their pointer, discarding their changes.
     #[arg(long)]
     force: bool,
 }
@@ -161,7 +162,7 @@ impl GitHfApp {
             Command::Clone(_) => todo!(),
             Command::Fetch(args) => fetch::run(args.remote.as_deref(), &args.revision),
             Command::Checkout(args) => checkout::run(&args.paths, args.force),
-            Command::Pull(_) => todo!(),
+            Command::Pull(args) => pull::run(args.remote.as_deref(), args.force),
             Command::FilterProcess(_) => filter_process::run(),
             Command::PrePush(args) => pre_push::run(&args.remote, &args.location),
         }
