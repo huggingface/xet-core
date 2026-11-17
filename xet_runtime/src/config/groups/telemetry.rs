@@ -10,9 +10,10 @@ crate::config::macros::xet_config_group!(telemetry, {
     ///
     /// The payload carries no file names, paths, hashes, repository ids, or user ids.
     ///
-    /// Telemetry is force-disabled regardless of this value when any of huggingface_hub's opt-out
-    /// variables (`HF_HUB_DISABLE_TELEMETRY`, `DISABLE_TELEMETRY`, `DO_NOT_TRACK`, `HF_HUB_OFFLINE`,
-    /// `TRANSFORMERS_OFFLINE`) is set to a truthy value.
+    /// When applying environment overrides, any truthy huggingface_hub opt-out variable
+    /// (`HF_HUB_DISABLE_TELEMETRY`, `DISABLE_TELEMETRY`, `DO_NOT_TRACK`, `HF_HUB_OFFLINE`,
+    /// `TRANSFORMERS_OFFLINE`) disables telemetry, taking precedence over `HF_XET_TELEMETRY_ENABLED`.
+    /// A subsequent `telemetry_enabled(true)` builder setter can re-enable it.
     ///
     /// The default value is true.
     ///
