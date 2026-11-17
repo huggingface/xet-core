@@ -10,6 +10,9 @@ members = [
 
     # Top-level crates (not published as packages)
     "git_xet",
+    "git_hf",
+    "git_extension_common",
+    "xet_pointer_file",
 ]
 exclude = [
     "simulation",
@@ -20,7 +23,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "1.7.0"
+version = "1.8.1"
 edition = "2024"
 license = "Apache-2.0"
 homepage = "https://github.com/huggingface/xet-core"
@@ -41,7 +44,6 @@ inherits = "dev"
 
 [workspace.dependencies]
 anyhow = "1"
-async-std = "1"
 async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
@@ -54,7 +56,9 @@ chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 colored = "3"
 console-subscriber = "0.5"
+const-str = "1.1"
 countio = { version = "0.3", features = ["futures"] }
+crc-fast = { version = "1.10", default-features = false, features = ["std"] }
 crc32fast = "1.5"
 csv = "1"
 ctor = "1"
@@ -65,14 +69,13 @@ futures-util = "0.3"
 gearhash = "0.1"
 getrandom = { version = "0.4", features = ["wasm_js"] }
 git-url-parse = "0.4"
-git-version = "0.3"
 git2 = "0.21"
 half = "2.7"
 heapify = "0.2"
 redb = "3.1"
 http = "1"
 human-bandwidth = "0.1"
-hyper = "1.8"
+hyper = "1.12"
 hyper-util = "0.1"
 itertools = "0.14"
 konst = "0.4"

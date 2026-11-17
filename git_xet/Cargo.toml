@@ -9,6 +9,7 @@ name = "git-xet"
 path = "src/bin/main.rs"
 
 [dependencies]
+git_extension_common = { path = "../git_extension_common" }
 xet-data = { path = "../xet_data" }
 xet-runtime = { path = "../xet_runtime" }
 xet-client = { path = "../xet_client" }
@@ -20,25 +21,21 @@ clap = { workspace = true }
 git-url-parse = { workspace = true }
 git2 = { workspace = true }
 http = { workspace = true }
-reqwest = { workspace = true }
-reqwest-middleware = { workspace = true }
 rust-netrc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-shell-words = { workspace = true }
-russh = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-russh = { workspace = true }
+git_extension_common = { path = "../git_extension_common", features = ["test-utils"] }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 
 [features]
 smoke-test = []
-git-xet-for-integration-test = ["russh"]
-git2-vendored-openssl = ["git2/vendored-openssl"]
+git-xet-for-integration-test = []
+git2-vendored-openssl = ["git_extension_common/git2-vendored-openssl"]
 simulation = ["xet-data/simulation", "xet-client/simulation", "xet-pkg/simulation"]
 
 # tell cargo-machete a renamed crate

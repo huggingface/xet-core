@@ -2,9 +2,6 @@ use std::time::Duration;
 
 utils::configurable_constants! {
 
-    // Approximately 4 MB min spacing between global dedup queries.  Calculated by 4MB / TARGET_CHUNK_SIZE
-    ref MIN_SPACING_BETWEEN_GLOBAL_DEDUP_QUERIES: usize = 256;
-
     /// scheme for a local filesystem based CAS server
     ref LOCAL_CAS_SCHEME: String = "local://".to_owned();
 

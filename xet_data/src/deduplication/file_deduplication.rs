@@ -71,7 +71,7 @@ impl<DataInterfaceType: DeduplicationDataInterface> FileDeduper<DataInterfaceTyp
             file_info: Vec::new(),
             internally_referencing_entries: Vec::new(),
             defrag_tracker: DefragPrevention::new(&ctx),
-            min_spacing_between_global_dedup_queries: 0,
+            min_spacing_between_global_dedup_queries: ctx.config.data.min_spacing_between_global_dedup_queries,
             next_chunk_index_eligible_for_global_dedup_query: 0,
             deduplication_metrics: DeduplicationMetrics::default(),
         }

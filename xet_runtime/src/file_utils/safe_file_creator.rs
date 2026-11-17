@@ -18,6 +18,8 @@ pub struct SafeFileCreator {
 impl SafeFileCreator {
     /// Safely creates a new file at a specific location.  Ensures the file is not created with elevated privileges,
     /// and a temporary file is created then renamed on close.
+    ///
+    /// Calling close() explicitly is required to rename.
     pub fn new<P: AsRef<Path>>(dest_path: P) -> io::Result<Self> {
         let dest_path = dest_path.as_ref().to_path_buf();
 
@@ -48,6 +50,8 @@ impl SafeFileCreator {
     /// pub fn set_dest_path<P: AsRef<Path>>(dest_path: P)
     /// ```
     /// to set the destination before closing the file.
+    ///
+    /// Calling close() explicitly is required to rename.
     pub fn new_unnamed(temp_root: impl AsRef<Path>) -> io::Result<Self> {
         let temp_path = Self::temp_file_path(temp_root, None);
 
@@ -65,6 +69,8 @@ impl SafeFileCreator {
 
     /// Safely replaces a new file at a specific location.  Ensures the file is not created with elevated privileges,
     /// and additionally the metadata of the old one will match the new metadata.
+    ///
+    /// Calling close() explicitly is required to rename.
     pub fn replace_existing<P: AsRef<Path>>(dest_path: P) -> io::Result<Self> {
         let mut s = Self::new(&dest_path)?;
         s.original_metadata = fs::metadata(dest_path).ok();
@@ -106,12 +112,11 @@ impl SafeFileCreator {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "destination file name not set"));
         };
 
-        let Some(mut writer) = self.writer.take() else {
-            return Ok(());
-        };
-
-        writer.flush()?;
-        drop(writer);
+        match &mut self.writer {
+            Some(writer) => writer.flush()?,
+            None => return Ok(()),
+        }
+        self.writer = None;
 
         // Replace the original file with the new file
         fs::rename(&self.temp_path, dest_path)?;
@@ -162,9 +167,7 @@ impl Seek for SafeFileCreator {
 
 impl Drop for SafeFileCreator {
     fn drop(&mut self) {
-        if let Err(e) = self.close() {
-            eprintln!("Error: Failed to close writer for {:?}: {}", self.dest_path, e);
-        }
+        let _ = self.abort();
     }
 }
 
@@ -276,17 +279,22 @@ mod tests {
     fn test_safe_file_creator_drop() {
         let dir = tempdir().unwrap();
         let dest_path = dir.path().join("drop_file.txt");
+        fs::write(&dest_path, "Old content").unwrap();
+        let temp_path;
 
         {
-            let mut safe_file_creator = SafeFileCreator::new(&dest_path).unwrap();
+            let mut safe_file_creator = SafeFileCreator::replace_existing(&dest_path).unwrap();
+            temp_path = safe_file_creator.temp_path.clone();
             writeln!(safe_file_creator, "Hello, world!").unwrap();
-            // safe_file_creator is dropped here
+            // safe_file_creator is dropped here without calling close()
         }
 
-        // Verify file contents
-        let mut contents = String::new();
-        File::open(&dest_path).unwrap().read_to_string(&mut contents).unwrap();
-        assert_eq!(contents.trim(), "Hello, world!");
+        assert_eq!(
+            fs::read_to_string(&dest_path).unwrap(),
+            "Old content",
+            "dest file should be unchanged when dropped without close()"
+        );
+        assert!(!temp_path.exists(), "temp file should be cleaned up on drop");
     }
 
     #[test]

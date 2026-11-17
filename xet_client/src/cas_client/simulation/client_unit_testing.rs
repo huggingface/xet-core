@@ -37,6 +37,7 @@ where
     test_get_file_data_with_ranges(factory().await).await;
     test_get_file_size(factory().await).await;
     test_global_dedup(factory().await).await;
+    test_global_dedup_footerless_upload(factory().await).await;
     test_v2_reconstruction_basic(factory().await).await;
     test_v2_reconstruction_ranges(factory().await).await;
     test_v2_reconstruction_matches_v1(factory().await).await;
@@ -679,6 +680,45 @@ pub async fn test_global_dedup(client: Arc<dyn DirectAccessClient>) {
     // in a different hash. The semantic correctness is verified above by checking that
     // the dedup hashes match.
     let _ = shard_hash; // Acknowledge we have it but don't assert path equality
+}
+
+/// Tests that a shard uploaded without a footer, as clients upload them, is returned by global dedup
+/// in a form the client can import into its shard cache.
+pub async fn test_global_dedup_footerless_upload(client: Arc<dyn DirectAccessClient>) {
+    use std::io::Cursor;
+
+    use xet_core_structures::metadata_shard::shard_format::test_routines::gen_random_shard_with_xorb_references;
+    use xet_core_structures::metadata_shard::{MDBShardFile, MDBShardInfo};
+
+    let tmp_dir = tempfile::TempDir::new().unwrap();
+    let shard_in = gen_random_shard_with_xorb_references(0, &[16; 8], &[2; 20], true, true).unwrap();
+    let shard_path = shard_in.write_to_directory(tmp_dir.path(), None).unwrap();
+
+    let sfc = xet_core_structures::metadata_shard::new_shard_file_cache();
+    let shard_file = MDBShardFile::load_from_file(&shard_path, &sfc).unwrap();
+    let permit = client.acquire_upload_permit().await.unwrap();
+    client
+        .upload_shard(shard_file.read_shard_to_bytes_remove_footer().unwrap(), permit, None)
+        .await
+        .unwrap();
+
+    let dedup_hashes =
+        MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut std::fs::File::open(&shard_path).unwrap()).unwrap();
+    assert_ne!(dedup_hashes.len(), 0);
+    let returned = client
+        .query_for_global_dedup_shard("default", &dedup_hashes[0])
+        .await
+        .unwrap()
+        .unwrap();
+
+    // The client imports the response through the shard cache, which needs the footer.
+    let cache_dir = tmp_dir.path().join("cache");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    MDBShardFile::write_out_from_reader(&cache_dir, &mut Cursor::new(&returned), &sfc).unwrap();
+    let returned_hashes = MDBShardInfo::filter_cas_chunks_for_global_dedup(&mut Cursor::new(&returned)).unwrap();
+    for hash in &dedup_hashes {
+        assert!(returned_hashes.contains(hash));
+    }
 }
 
 /// Runs all global dedup shard expiration tests. Must be called from a

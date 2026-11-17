@@ -4,8 +4,8 @@ Git LFS custom transfer agent (`git-xet`) built on `xet_pkg`. Part of the root w
 
 ## Setup
 
-- `git` and `git-lfs` must be on `PATH`, and run `git lfs install` once. Many unit tests create real repositories with `TestRepo` / `TempHome` under a temporary `HOME` so your global Git config is untouched.
-- The integration tests in `tests/test_ssh.rs` start a local SSH server through `russh`; no external SSH service is needed.
+- `git` and `git-lfs` must be on `PATH`, and run `git lfs install` once. Many unit tests create real repositories with `TestRepo` / `TempHome` from `git_extension_common`'s `test-utils` feature, under a temporary `HOME` so your global Git config is untouched.
+- The integration tests in `tests/test_ssh.rs` start a local SSH server with `start_local_ssh_server` from `git_extension_common`'s `test-utils` feature; no external SSH service is needed.
 
 ## Build and test
 
@@ -18,8 +18,8 @@ Run from the repository root.
 | `cargo clippy -r --verbose -- -D warnings` | Lint (with the root workspace) |
 | `cargo build --package git_xet --release` | Build the `git-xet` binary |
 
-The `git-xet-for-integration-test` feature also compiles test-only hooks into the binary (`src/app.rs`, `src/test_utils/`); it is never enabled for release builds. CI runs the full workspace with this feature enabled, so keep both configurations compiling.
+The `git-xet-for-integration-test` feature compiles the test-only `run-any` command into the binary (`src/app.rs`) and enables `tests/test_ssh.rs`; it is never enabled for release builds. `src/test_utils/` holds only `gitaskpass.sh`, used by unit tests. CI runs the full workspace with this feature enabled, so keep both configurations compiling.
 
-The integration tests invoke the freshly built `git-xet` binary through `git xet run-any`, so they run as a child of a real `git` process, the same way `git-lfs` launches the agent. Their main purpose is Windows behavior (Git for Windows adds MinGW/MSYS utilities such as `ssh` and `sh` to the child `PATH`), so check the Windows CI job when touching process spawning or SSH handling. Tests that mutate environment variables use `#[serial(...)]` from `serial_test`; follow that pattern for new ones.
+The integration tests invoke the freshly built `git-xet` binary through `git xet run-any`, so they run as a child of a real `git` process, the same way `git-lfs` launches the agent. Their main purpose is Windows behavior (Git for Windows adds MinGW/MSYS utilities such as `ssh` and `sh` to the child `PATH`), so check the Windows CI job when touching process spawning or SSH handling, including the shared code in `git_extension_common`. Tests that mutate environment variables use `#[serial(...)]` from `serial_test`; follow that pattern for new ones.
 
 `git_xet` is excluded from `cargo bench`; do not add benchmarks here.

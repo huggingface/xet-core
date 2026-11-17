@@ -17,7 +17,7 @@ AAAEB+gwM6BMsyjmnW1LlZQvUqWWuf9UAEepPBj0xDLDNMOT7a+a3PogYfn8yYaws3ZJIQ
 4e98TRvKeKLjtC3veAGvAAAADGdpdC14ZXQtdGVzdAE=
 -----END OPENSSH PRIVATE KEY-----";
 
-pub use crate::auth::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
+use crate::auth::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
 
 /// Starts a lightweight SSH server intended for tests and local/manual debugging.
 ///

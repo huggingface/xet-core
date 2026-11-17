@@ -79,6 +79,20 @@ mod testing_clean_smudge {
         check_clean_smudge_files(&[("a", 16)]).await;
     }
 
+    /// Uploads fall back to the xorb upload API when the server does not offer upload grants.
+    #[cfg(feature = "simulation")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_clean_smudge_without_upload_grants() {
+        let mut ts = HydrateDehydrateTest::for_mode(HydrationMode::ServerV2);
+        ts.ensure_server_created().await;
+        ts.test_server().unwrap().set_xorb_upload_grants_enabled(false).await.unwrap();
+        create_random_files(&ts.src_dir, &[("a", 16), ("b", 1024)], 0);
+
+        ts.dehydrate(false).await;
+        ts.hydrate().await;
+        ts.verify_src_dest_match();
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_multiple() {
         check_clean_smudge_files(&[("a", 16), ("b", 8)]).await;

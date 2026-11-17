@@ -1,6 +1,6 @@
 // A utility to help establish SSH connection to a remote Git server.
 
-use crate::errors::{GitXetError, Result};
+use crate::errors::{GitExtensionError, Result};
 use crate::git_repo::GitRepo;
 
 // The type of SSH program to use for SSH connections, valid values are given
@@ -29,6 +29,9 @@ pub struct SSHMetadata {
     pub user_and_host: String,
     pub port: Option<u16>,
     pub arg_list: Vec<String>,
+    /// Never prompt (passphrase, password, or host key confirmation) and fail fast instead. Agent and
+    /// unencrypted keys still work. Use for background work, such as a Git filter, that must not block.
+    pub batch: bool,
 }
 
 const DEFAULT_SSH_CMD: &str = "ssh";
@@ -85,7 +88,7 @@ pub fn get_sshexe_and_args(meta: &SSHMetadata, repo: &GitRepo) -> Result<(String
     let variant = get_ssh_variant(&repo_config, &sshexe);
 
     if matches!(variant, Variant::Simple) {
-        return Err(GitXetError::not_supported(
+        return Err(GitExtensionError::not_supported(
             "unable to construct an ssh command using an ssh program of \"simple\" variant. Please
             use an advanced ssh program and update environment variables \"GIT_SSH_COMMAND\", \"GIT_SSH\",
             \"GIT_SSH_VARIANT\" and git config entries \"core.sshCommand\" and \"ssh.variant\" accordingly.
@@ -103,6 +106,14 @@ pub fn get_sshexe_and_args(meta: &SSHMetadata, repo: &GitRepo) -> Result<(String
     if matches!(variant, Variant::Tortoise) {
         // TortoisePlink requires the -batch argument to behave like ssh/plink
         args.push("-batch".into());
+    }
+
+    if meta.batch {
+        match variant {
+            Variant::Putty => args.push("-batch".into()),
+            Variant::Tortoise => {}, // already batch, see above
+            _ => args.extend(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"].map(String::from)),
+        }
     }
 
     if let Some(p) = meta.port {
@@ -165,7 +176,7 @@ fn get_ssh_variant(repo_config: &git2::Config, sshexe: &str) -> Variant {
 // Return the executable name and the args to execute this shell command.
 fn format_for_shell_execution(command: &str, args: &[String]) -> Result<(String, Vec<String>)> {
     let parsed_command = shell_words::split(command)
-        .map_err(|e| GitXetError::config_error(format!("parsing ssh command failed with {e}")))?;
+        .map_err(|e| GitExtensionError::config_error(format!("parsing ssh command failed with {e}")))?;
     let complete_shell_command = shell_words::join(parsed_command.iter().chain(args.iter()));
 
     Ok((DEFAULT_GIT_BASH.into(), vec!["-c".into(), complete_shell_command]))
@@ -293,6 +304,42 @@ mod tests {
 
     #[test]
     #[serial(env_var_write_read)]
+    fn test_get_sshexe_and_args_batch() -> Result<()> {
+        let test_repo = TestRepo::new("main")?;
+        let repo = GitRepo::open(test_repo.path())?;
+        let meta = SSHMetadata {
+            user_and_host: "git@hf.co".into(),
+            port: Some(22),
+            arg_list: vec!["auth".into()],
+            batch: true,
+        };
+        let (_, args, _) = get_sshexe_and_args(&meta, &repo)?;
+        assert_eq!(
+            args,
+            [
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                "-p",
+                "22",
+                "git@hf.co",
+                "auth"
+            ]
+        );
+        for (variant, expected) in [
+            ("putty", vec!["-batch", "-P", "22"]),
+            ("tortoiseplink", vec!["-batch", "-P", "22"]),
+        ] {
+            let _env = EnvVarGuard::set("GIT_SSH_VARIANT", variant);
+            let (_, args, _) = get_sshexe_and_args(&meta, &repo)?;
+            assert_eq!(args[..3], expected[..], "{variant}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial(env_var_write_read)]
     fn test_get_sshexe_and_args_no_port() -> Result<()> {
         let test_repo = TestRepo::new("main")?;
         let repo = GitRepo::open(test_repo.path())?;
@@ -301,6 +348,7 @@ mod tests {
             user_and_host: "git@hf.co".into(),
             port: None,
             arg_list: vec!["auth".into(), "org/repo".into(), "upload".into()],
+            batch: false,
         };
 
         // Test with default SSH variant (OpenSSH)
@@ -370,6 +418,7 @@ mod tests {
             user_and_host: "git@hf.co".to_string(),
             port: Some(2222),
             arg_list: vec!["auth".into(), "org/repo".into(), "upload".into()],
+            batch: false,
         };
 
         // Test with default SSH variant (OpenSSH)
@@ -409,6 +458,7 @@ mod tests {
             user_and_host: "git@github.com".to_string(),
             port: None,
             arg_list: vec!["auth".into(), "org/repo".into(), "upload".into()],
+            batch: false,
         };
 
         // Test with 'simple' variant, which should error
@@ -416,7 +466,7 @@ mod tests {
             let _env = EnvVarGuard::set("GIT_SSH_VARIANT", "simple");
             let result = get_sshexe_and_args(&meta, &repo);
             assert!(result.is_err());
-            assert!(matches!(result.unwrap_err(), GitXetError::NotSupported(_)));
+            assert!(matches!(result.unwrap_err(), GitExtensionError::NotSupported(_)));
         }
 
         Ok(())
@@ -432,6 +482,7 @@ mod tests {
             user_and_host: "git@hf.co".into(),
             port: None,
             arg_list: vec!["auth".into(), "org/repo".into(), "upload".into()],
+            batch: false,
         };
 
         // Test with default SSH variant (OpenSSH)
@@ -495,6 +546,7 @@ mod tests {
             user_and_host: "git@hf.co".to_string(),
             port: Some(2222),
             arg_list: vec!["auth".into(), "org/repo".into(), "upload".into()],
+            batch: false,
         };
 
         // Test with default SSH variant (OpenSSH)

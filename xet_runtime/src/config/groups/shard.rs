@@ -15,8 +15,7 @@ crate::config::macros::xet_config_group!(shard, {
     /// Use the environment variable `HF_XET_SHARD_CACHE_SIZE_LIMIT` to set this value.
     ref cache_size_limit : ByteSize = ByteSize::from("16gb");
 
-    /// The maximum size of the chunk index table that's stored in memory.  After this,
-    /// no new chunks are loaded for deduplication.
+    /// The maximum size of the chunk index table that's stored in memory.
     ///
     /// The default value is 67108864.
     ///

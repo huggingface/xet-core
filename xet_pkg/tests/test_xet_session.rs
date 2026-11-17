@@ -5,12 +5,11 @@
 //!
 //! - **Tokio async** (External mode): standard `#[tokio::test]` tests.
 //! - **Blocking** (Owned mode): sync `build()` + `_blocking` methods.
-//! - **Non-tokio async bridge** (Owned mode): `futures::executor`, `smol`, `async-std` driving async methods via
+//! - **Non-tokio async bridge** (Owned mode): `futures::executor` and `smol` driving async methods via
 //!   `XetContext::bridge_async`.
 //! - **Deficient tokio runtime** (fallback to Owned mode): tokio runtimes missing IO/time drivers or using
 //!   `current_thread` flavor.
-//! - **Blocking from non-tokio executors**: `_blocking` methods called from within smol/async-std/futures executor
-//!   contexts.
+//! - **Blocking from non-tokio executors**: `_blocking` methods called from within smol/futures executor contexts.
 
 use std::fs;
 use std::future::Future;
@@ -187,17 +186,15 @@ type BoxFuture = Pin<Box<dyn Future<Output = ()>>>;
 enum NonTokioExecutor {
     Futures,
     Smol,
-    AsyncStd,
 }
 
 impl NonTokioExecutor {
-    const ALL: [Self; 3] = [Self::Futures, Self::Smol, Self::AsyncStd];
+    const ALL: [Self; 2] = [Self::Futures, Self::Smol];
 
     fn label(self) -> &'static str {
         match self {
             Self::Futures => "futures",
             Self::Smol => "smol",
-            Self::AsyncStd => "async_std",
         }
     }
 
@@ -205,7 +202,6 @@ impl NonTokioExecutor {
         match self {
             Self::Futures => futures::executor::block_on(future),
             Self::Smol => smol::block_on(future),
-            Self::AsyncStd => async_std::task::block_on(future),
         }
     }
 }

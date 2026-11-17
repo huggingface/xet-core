@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use http::{Extensions, HeaderMap, StatusCode};
 use reqwest::header::{AUTHORIZATION, COOKIE, HeaderValue, SET_COOKIE};
-use reqwest::{Request, Response};
+use reqwest::{Error as ReqwestError, Request, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 use tokio::sync::Mutex;
 use tracing::{Instrument, info, info_span, warn};
@@ -34,10 +34,26 @@ impl Middleware for HttpsToHttpMiddleware {
         if url.scheme() == "https" {
             let original_scheme = url.scheme().to_string();
             url.set_scheme("http").ok();
-            info!(original_scheme, new_scheme = "http", url = %url, "Rewriting URL scheme for Unix socket proxy");
+            info!(original_scheme, new_scheme = "http", url = %url_without_query(url), "Rewriting URL scheme for Unix socket proxy");
         }
         next.run(req, extensions).await
     }
+}
+
+/// Returns the URL without its query so presigned URL signatures are not logged.
+#[cfg(unix)]
+fn url_without_query(url: &reqwest::Url) -> reqwest::Url {
+    let mut url = url.clone();
+    url.set_query(None);
+    url
+}
+
+/// Removes the query from the error's URL so presigned URL signatures are not logged.
+pub(crate) fn strip_url_query(mut err: ReqwestError) -> ReqwestError {
+    if let Some(url) = err.url_mut() {
+        url.set_query(None);
+    }
+    err
 }
 
 /// Utility to redact sensitive headers from a HeaderMap before logging
@@ -287,6 +303,10 @@ impl Middleware for LoggingMiddleware {
                 let request_id = request_id_from_response(res);
                 info!(request_id, status_code, "Received CAS response");
             })
+            .map_err(|err| match err {
+                reqwest_middleware::Error::Reqwest(e) => reqwest_middleware::Error::Reqwest(strip_url_query(e)),
+                other => other,
+            })
             .inspect_err(|err| {
                 warn!(?err, "Request error");
             })
@@ -405,6 +425,30 @@ pub fn request_id_from_response(res: &Response) -> &str {
 #[cfg(not(target_family = "wasm"))]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn test_url_without_query_drops_query() {
+        let url = reqwest::Url::parse("https://example.com/xorb?X-Amz-Credential=abc&X-Amz-Signature=secret").unwrap();
+        let stripped = url_without_query(&url);
+        assert_eq!(stripped.as_str(), "https://example.com/xorb");
+        assert!(url.query().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_strip_url_query_removes_query_from_error_debug() {
+        let err = reqwest::Client::new()
+            .get("http://127.0.0.1:1/xorb?X-Amz-Signature=secret")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(format!("{err:?}").contains("X-Amz-Signature=secret"));
+
+        let err = strip_url_query(err);
+        let debug = format!("{err:?}");
+        assert!(!debug.contains("X-Amz-Signature"), "{debug}");
+        assert!(debug.contains("/xorb"));
+    }
 
     #[cfg(unix)]
     mod uds_tests {

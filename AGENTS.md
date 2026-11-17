@@ -98,6 +98,7 @@ API layers: `hf_xet` Python extension → `hf-xet` Rust crate → `xet-data`, su
 | `xet_core_structures/` | `xet-core-structures` | Hashes, shard/Xorb formats, shared structures |
 | `xet_runtime/` | `xet-runtime` | Runtime, configuration, logging, utilities |
 | `git_xet/` | `git_xet` | Git LFS integration |
+| `git_extension_common/` | `git_extension_common` | Shared Git support: repositories, remote URLs, credentials, SSH, subprocesses |
 | `hf_xet/` | `hf_xet` | PyO3 bindings; separate manifest |
 | `simulation/` | `simulation` | Simulations/benchmarks; separate manifest |
 | `wasm/` | Separate crates | Browser/WASM builds |

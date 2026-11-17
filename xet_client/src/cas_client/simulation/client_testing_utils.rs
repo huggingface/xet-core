@@ -136,7 +136,7 @@ pub trait ClientTestingUtils: Client + Send + Sync {
             let cfg = xet_runtime::config::XetConfig::new();
             let serialized_xorb = SerializedXorbObject::from_xorb(
                 raw_xorb.clone(),
-                true,
+                false,
                 cfg.xorb.compression_policy.as_str(),
                 cfg.xorb.compression_scheme_retest_interval,
             )?;

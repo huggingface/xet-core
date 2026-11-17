@@ -15,7 +15,7 @@ mod xet_file;
 // Reexport this one for now
 pub use file_cleaner::{Sha256Policy, SingleFileCleaner};
 pub use file_download_session::FileDownloadSession;
-pub use file_upload_session::FileUploadSession;
+pub use file_upload_session::{DeduplicationSource, FileUploadSession, UploadShardCachePolicy};
 pub use range_upload::{DirtyInput, upload_ranges};
 pub use remote_client_interface::create_remote_client;
 pub use xet_client::cas_client::Client as CasClient;

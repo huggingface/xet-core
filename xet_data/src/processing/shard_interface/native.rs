@@ -1,5 +1,3 @@
-use std::fs::File;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,7 +17,7 @@ use xet_core_structures::metadata_shard::session_directory::{
 use xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard;
 use xet_core_structures::metadata_shard::xorb_structs::MDBXorbInfo;
 use xet_core_structures::metadata_shard::{
-    MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDB_SHARD_TARGET_SIZE, MDBShardFile, MDBShardFileHeader, ShardFileManager,
+    ChunkIndexSizeEnforcement, MDB_SHARD_LOCAL_CACHE_EXPIRATION, MDB_SHARD_TARGET_SIZE, ShardFileManager,
     get_shard_file_cache,
 };
 use xet_runtime::core::XetContext;
@@ -27,12 +25,14 @@ use xet_runtime::error_printer::ErrorPrinter;
 
 use super::super::configurations::TranslatorConfig;
 use crate::error::Result;
+use crate::processing::UploadShardCachePolicy;
 use crate::progress_tracking::upload_tracking::CompletionTracker;
 
 pub struct SessionShardInterface {
     ctx: XetContext,
     session_shard_manager: Arc<ShardFileManager>,
     cache_shard_manager: Arc<ShardFileManager>,
+    cache_policy: UploadShardCachePolicy,
 
     client: Arc<dyn Client + Send + Sync>,
     completion_tracker: Arc<CompletionTracker>,
@@ -63,6 +63,7 @@ impl SessionShardInterface {
         client: Arc<dyn Client + Send + Sync>,
         completion_tracker: Arc<CompletionTracker>,
         dry_run: bool,
+        cache_policy: UploadShardCachePolicy,
     ) -> Result<Self> {
         // Create a temporary session directory where we hold all the shards before upload.
         std::fs::create_dir_all(&config.shard_session_directory)?;
@@ -80,9 +81,10 @@ impl SessionShardInterface {
 
         // To allow resume from previous session attempts, merge and copy all the valid shards in the xorb metadata
         // directory into the current session directory. The originals will remain until all the current session xorbs
-        // have been uploaded successfully.  (Also, don't do this on a dry run, as it could screw up non-dry runs).
+        // have been uploaded successfully. Don't do this on a dry run, as it could screw up non-dry runs, or with
+        // `Skip`.
         let shard_merge_jh = {
-            if !dry_run {
+            if !dry_run && matches!(cache_policy, UploadShardCachePolicy::Populate) {
                 Some(merge_shards_background(
                     ctx.runtime.clone(),
                     &xorb_metadata_staging_dir,
@@ -116,8 +118,10 @@ impl SessionShardInterface {
                 let resumed_session_shard_manager =
                     ShardFileManager::new_in_session_directory(ctx, &session_dir, false).await?;
 
+                // This is the initial registration, so once the index is full, stop rather than evict the shards we
+                // just indexed.
                 resumed_session_shard_manager
-                    .register_shards(&shard_merge_result.merged_shards)
+                    .register_shards(&shard_merge_result.merged_shards, ChunkIndexSizeEnforcement::StopAtCap)
                     .await?;
 
                 Some(resumed_session_shard_manager)
@@ -133,6 +137,7 @@ impl SessionShardInterface {
             ctx: ctx.clone(),
             session_shard_manager,
             cache_shard_manager,
+            cache_policy,
             xorb_metadata_staging_dir,
             staged_shards_to_remove_on_success,
             xorb_metadata_staging: Mutex::new((SystemTime::now(), MDBInMemoryShard::default())),
@@ -157,12 +162,14 @@ impl SessionShardInterface {
 
         // The above process found something and downloaded it; it should now be in the cache directory and valid
         // for deduplication.  Register it and restart the dedup process at the start of this chunk.
-        self.cache_shard_manager.import_shard_from_bytes(&new_shard).await?;
+        self.cache_shard_manager
+            .import_shard_from_bytes(&new_shard, ChunkIndexSizeEnforcement::Eviction)
+            .await?;
 
         Ok(true)
     }
 
-    /// Returns the number of chunks and xorb to dedup against, as well as whether it's already known to be uploaded.
+    /// Returns matching chunks, their xorb, and whether its transfer to the session's client has already completed.
     pub async fn chunk_hash_dedup_query(
         &self,
         query_hashes: &[MerkleHash],
@@ -200,8 +207,9 @@ impl SessionShardInterface {
 
     // Add in uploaded xorb information that has been known to be uploaded successfully.
     pub async fn add_uploaded_xorb_block(&self, xorb_block_contents: Arc<MDBXorbInfo>) -> Result<()> {
-        // Ignore this part of a dry run
-        if self.dry_run {
+        // These records are shared by later sessions for the same endpoint, which then treat the xorbs as already on
+        // the remote. Skip them for a dry run, and for clients whose writes don't establish remote availability.
+        if self.dry_run || matches!(self.cache_policy, UploadShardCachePolicy::Skip) {
             return Ok(());
         }
 
@@ -264,6 +272,7 @@ impl SessionShardInterface {
             let cache_shard_manager = self.cache_shard_manager.clone();
             let shard_bytes_uploaded = shard_bytes_uploaded.clone();
             let dry_run = self.dry_run;
+            let cache_policy = self.cache_policy;
             let completion_tracker = self.completion_tracker.clone();
 
             // Acquire a permit for uploading before we spawn the task; the acquired permit is dropped after the task
@@ -278,7 +287,7 @@ impl SessionShardInterface {
                 async move {
                     debug!("Uploading shard {:?} from staging area to CAS.", &si.shard_hash);
 
-                    let data: Bytes = read_shard_to_bytes_remove_footer(&si)?;
+                    let data: Bytes = si.read_shard_to_bytes_remove_footer()?;
 
                     shard_bytes_uploaded.fetch_add(data.len() as u64, Ordering::Relaxed);
 
@@ -308,6 +317,11 @@ impl SessionShardInterface {
 
                     info!("Shard {:?} upload + sync completed successfully.", &si.shard_hash);
 
+                    // A successful staging write does not establish remote availability.
+                    if matches!(cache_policy, UploadShardCachePolicy::Skip) {
+                        return Ok(());
+                    }
+
                     // Now that the upload succeeded, move that shard to the cache directory, adding in an expiration
                     // time.
                     let new_shard_path = si.export_with_expiration(
@@ -317,7 +331,9 @@ impl SessionShardInterface {
                     )?;
 
                     // Register that new shard in the cache shard manager
-                    cache_shard_manager.register_shards(&[new_shard_path]).await?;
+                    cache_shard_manager
+                        .register_shards(&[new_shard_path], ChunkIndexSizeEnforcement::Eviction)
+                        .await?;
 
                     Ok(())
                 }
@@ -341,51 +357,94 @@ impl SessionShardInterface {
     }
 }
 
-fn read_shard_to_bytes_remove_footer(si: &Arc<MDBShardFile>) -> Result<Bytes> {
-    let split_off_index = si.shard.metadata.file_lookup_offset as usize;
-    // Read only the portion of the shard file up to the file_lookup_offset,
-    // which excludes the footer and lookup sections.
-    let mut file = File::open(&si.path)?;
-    let mut buf = vec![0u8; split_off_index];
-    file.read_exact(&mut buf)?;
-    // re-write the header to set footer_size to 0.
-    let mut header = si.shard.header.clone();
-    header.footer_size = 0;
-    header.serialize(&mut (&mut buf[..size_of::<MDBShardFileHeader>()]))?;
-    #[cfg(debug_assertions)]
-    {
-        let new_header =
-            MDBShardFileHeader::deserialize(&mut std::io::Cursor::new(&buf[..size_of::<MDBShardFileHeader>()]))?;
-        debug_assert_eq!(new_header.footer_size, 0);
-    }
-    Ok(Bytes::from(buf))
-}
-
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use xet_client::cas_client::MemoryClient;
+    use xet_core_structures::metadata_shard::xorb_structs::{XorbChunkSequenceEntry, XorbChunkSequenceHeader};
+    use xet_runtime::config::XetConfig;
 
     use super::*;
+    use crate::progress_tracking::UploadGroupProgress;
 
-    #[test]
-    fn test_read_shard_to_bytes_remove_footer() -> Result<()> {
-        let tmp_dir = TempDir::with_prefix("test_read_shard_to_bytes_remove_footer")?;
-        let tmp_dir_path = tmp_dir.path();
+    // Resume records tell later sessions for the same endpoint that a xorb is already on the remote, so a session whose
+    // client doesn't establish remote availability must not write them.
+    #[tokio::test]
+    async fn uploaded_xorb_records_are_written_only_when_populating_cache() -> Result<()> {
+        for (cache_policy, expected_records) in
+            [(UploadShardCachePolicy::Populate, 1), (UploadShardCachePolicy::Skip, 0)]
+        {
+            let mut runtime_config = XetConfig::new();
+            runtime_config.data.session_xorb_metadata_flush_max_count = 1;
+            let ctx = XetContext::from_external(tokio::runtime::Handle::current(), runtime_config);
+            let dir = tempfile::tempdir()?;
+            let config = Arc::new(TranslatorConfig::memory_config(&ctx, dir.path())?);
+            let interface = SessionShardInterface::new(
+                &ctx,
+                config.clone(),
+                MemoryClient::new(ctx.clone()),
+                Arc::new(CompletionTracker::new(UploadGroupProgress::new())),
+                false,
+                cache_policy,
+            )
+            .await?;
 
-        let mdb_in_mem = MDBInMemoryShard::default();
-        let temp_shard_file_path = mdb_in_mem.write_to_directory(tmp_dir_path, None)?;
+            let chunk = XorbChunkSequenceEntry::new(MerkleHash::from([1, 2, 3, 4]), 10, 0);
+            interface
+                .add_uploaded_xorb_block(Arc::new(MDBXorbInfo {
+                    metadata: XorbChunkSequenceHeader::new(MerkleHash::from([5, 6, 7, 8]), 1, 10),
+                    chunks: vec![chunk],
+                }))
+                .await?;
 
-        let sfc = xet_core_structures::metadata_shard::new_shard_file_cache();
-        let shard_file = MDBShardFile::load_from_file(&temp_shard_file_path, &sfc)?;
-        assert_eq!(
-            shard_file.shard.header.footer_size,
-            size_of::<xet_core_structures::metadata_shard::MDBShardFileFooter>() as u64
-        );
+            let records = std::fs::read_dir(config.shard_session_directory.join("xorb_metadata"))?.count();
+            assert_eq!(records, expected_records);
+        }
+        Ok(())
+    }
 
-        let no_footer_shard_buf = read_shard_to_bytes_remove_footer(&shard_file)?;
-        let buf_shard_header =
-            MDBShardFileHeader::deserialize(&mut Cursor::new(&no_footer_shard_buf[..size_of::<MDBShardFileHeader>()]))?;
-        assert_eq!(buf_shard_header.footer_size, 0);
+    // Resume records left by an earlier session describe xorbs on the remote. Only a session whose writes reach the
+    // remote may dedup against them and delete them once its own shards are uploaded.
+    #[tokio::test]
+    async fn resume_records_are_used_and_removed_only_when_populating_cache() -> Result<()> {
+        for (cache_policy, expect_resumed) in [
+            (UploadShardCachePolicy::Populate, true),
+            (UploadShardCachePolicy::Skip, false),
+        ] {
+            let ctx = XetContext::from_external(tokio::runtime::Handle::current(), XetConfig::new());
+            let dir = tempfile::tempdir()?;
+            let config = Arc::new(TranslatorConfig::memory_config(&ctx, dir.path())?);
+
+            // A record left behind by an earlier session for the same endpoint.
+            let chunk_hash = MerkleHash::from([1, 2, 3, 4]);
+            let xorb_hash = MerkleHash::from([5, 6, 7, 8]);
+            let mut record = MDBInMemoryShard::default();
+            record.add_xorb_block(Arc::new(MDBXorbInfo {
+                metadata: XorbChunkSequenceHeader::new(xorb_hash, 1, 10),
+                chunks: vec![XorbChunkSequenceEntry::new(chunk_hash, 10, 0)],
+            }))?;
+            let xorb_metadata_dir = config.shard_session_directory.join("xorb_metadata");
+            std::fs::create_dir_all(&xorb_metadata_dir)?;
+            let record_path = record.write_to_directory(&xorb_metadata_dir, Some(*MDB_SHARD_LOCAL_CACHE_EXPIRATION))?;
+
+            let interface = SessionShardInterface::new(
+                &ctx,
+                config.clone(),
+                MemoryClient::new(ctx.clone()),
+                Arc::new(CompletionTracker::new(UploadGroupProgress::new())),
+                false,
+                cache_policy,
+            )
+            .await?;
+
+            let resumed = interface.chunk_hash_dedup_query(&[chunk_hash]).await?;
+            assert_eq!(
+                resumed.map(|(_, entry, uploaded)| (entry.xorb_hash, uploaded)),
+                expect_resumed.then_some((xorb_hash, true))
+            );
+
+            interface.upload_and_register_session_shards().await?;
+            assert_eq!(record_path.exists(), !expect_resumed);
+        }
         Ok(())
     }
 }
