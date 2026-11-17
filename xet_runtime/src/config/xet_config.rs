@@ -264,6 +264,20 @@ mod tests {
     }
 
     #[test]
+    fn test_get_byte_size_is_exact() {
+        let config = XetConfig::default()
+            .with_config("data.ingestion_block_size", "1234567")
+            .unwrap();
+        assert_eq!(config.data.ingestion_block_size.as_u64(), 1_234_567);
+
+        // The value read back must restore the same configuration.
+        let restored = XetConfig::default()
+            .with_config("data.ingestion_block_size", config.get("data.ingestion_block_size").unwrap())
+            .unwrap();
+        assert_eq!(restored.data.ingestion_block_size.as_u64(), 1_234_567);
+    }
+
+    #[test]
     fn test_with_config_sets_multiple_field_types() {
         let config = XetConfig::default()
             .with_config("data.max_concurrent_file_ingestion", 64)
