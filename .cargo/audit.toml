@@ -20,4 +20,6 @@ ignore = [
     # ships with inferno >= 0.12.7 (quick-xml >= 0.41).
     "RUSTSEC-2026-0194",  # quick-xml: quadratic duplicate-attribute check when parsing start tags
     "RUSTSEC-2026-0195",  # quick-xml: unbounded namespace declarations in NsReader
+    "RUSTSEC-2026-0492",  # russh: Client `Handler` callbacks run for channels the client never opened
+    "RUSTSEC-2026-0495",  # russh: Agent server signs with confirm-constrained keys without calling `Agent::confirm
 ]
