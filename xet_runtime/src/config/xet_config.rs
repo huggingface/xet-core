@@ -145,17 +145,7 @@ impl XetConfig {
     /// high performance settings are applied first and environment variable overrides afterwards,
     /// so an explicitly set environment variable always beats the high performance preset.
     pub fn new() -> Self {
-        let mut config = Self::default();
-        if crate::utils::is_high_performance() {
-            config = config.with_high_performance();
-        }
-        let mut config = config.with_env_overrides();
-        // Sanity-check env-provided values so the caller sees the same coherent
-        // numbers the runtime will use. Configs can still be mutated after this
-        // (e.g. Python's `with_config`), so `XetContext::new` normalizes again
-        // before freezing the config.
-        config.reconstruction.normalize();
-        config
+        Self::builder_from_env().build()
     }
 
     /// Apply high performance mode settings to this configuration.
@@ -209,13 +199,20 @@ impl XetConfig {
         }
     }
 
-    /// Start building a config from [`XetConfig::new`], so the high performance preset and
-    /// environment variable overrides are applied first and setters override them.
+    /// Start building a config with the same defaults, high performance preset, and environment
+    /// overrides as [`XetConfig::new`]. Setters override them before [`XetConfigBuilder::build`]
+    /// normalizes the reconstruction settings.
     ///
     /// Setters always win, including `telemetry_enabled(true)` over huggingface_hub's telemetry
     /// opt-out variables.
     pub fn builder_from_env() -> XetConfigBuilder {
-        XetConfigBuilder { config: Self::new() }
+        let mut config = Self::default();
+        if crate::utils::is_high_performance() {
+            config = config.with_high_performance();
+        }
+        XetConfigBuilder {
+            config: config.with_env_overrides(),
+        }
     }
 }
 
@@ -239,6 +236,23 @@ impl XetConfigBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial(env)]
+    #[cfg(not(target_family = "wasm"))]
+    fn test_builder_override_does_not_preserve_inflated_limit() {
+        use crate::utils::EnvVarGuard;
+
+        let _size = EnvVarGuard::set("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE", "16gb");
+        let _limit = EnvVarGuard::set("HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT", "1gb");
+
+        let config = XetConfig::builder_from_env()
+            .reconstruction_download_buffer_size(ByteSize::from("1mb"))
+            .build();
+
+        assert_eq!(config.reconstruction.download_buffer_size.as_u64(), 1_000_000);
+        assert_eq!(config.reconstruction.download_buffer_limit.as_u64(), 1_000_000_000);
+    }
 
     #[test]
     fn test_with_config_and_get() {
