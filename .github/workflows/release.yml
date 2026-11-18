@@ -448,12 +448,12 @@ jobs:
             python-version: "3.14t"
           # macos aarch64
           - platform:
-              runner: macos-14
+              runner: macos-latest
               os: macos
               target: aarch64
             python-version: "3.14"
           - platform:
-              runner: macos-14
+              runner: macos-latest
               os: macos
               target: aarch64
             python-version: "3.14t"
