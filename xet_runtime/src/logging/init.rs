@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use chrono::{DateTime, FixedOffset, Local, Utc};
+use jiff::{Timestamp, Zoned};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 use tracing::{debug, error, info, warn};
 #[cfg(not(target_family = "wasm"))]
@@ -170,14 +170,14 @@ fn init_logging_to_file(_path: &Path, _use_json: bool) -> Result<(), std::io::Er
     Err(io::Error::new(io::ErrorKind::Unsupported, "file logging is not supported on wasm targets"))
 }
 
+/// `strftime` format of the timestamp embedded in log file names.
+const LOG_FILE_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%3f%z";
+
 /// Build `<prefix>_<YYYYMMDD>T<HHMMSS><mmm><+/-HHMM>_<pid>.log` in `dir`.
 /// Timestamp is in *local time with numeric offset* (e.g., -0700), filename-safe.
 pub fn log_file_in_dir(cfg: &LogDirConfig, dir: impl AsRef<Path>) -> PathBuf {
-    let now_local: DateTime<Local> = Local::now();
-    let now_fixed: DateTime<FixedOffset> = now_local.with_timezone(now_local.offset());
-
     // ISO 8601 basic, filename-safe (no colons): 20250915T083210123-0700
-    let ts = now_fixed.format("%Y%m%dT%H%M%S%3f%z"); // %z => ±HHMM
+    let ts = Zoned::now().strftime(LOG_FILE_TIMESTAMP_FORMAT); // %z => ±HHMM
 
     let pid = std::process::id();
     let prefix = &cfg.filename_prefix;
@@ -187,8 +187,8 @@ pub fn log_file_in_dir(cfg: &LogDirConfig, dir: impl AsRef<Path>) -> PathBuf {
 
 /// Parse `<prefix>_<YYYYMMDD>T<HHMMSS><mmm><+/-HHMM>_<pid>.log`
 /// Works with full paths or bare filenames.
-/// Returns (prefix, timestamp with fixed offset, pid).
-pub fn parse_log_file_name(path: impl AsRef<Path>) -> Option<(String, DateTime<FixedOffset>, u32)> {
+/// Returns (prefix, timestamp in the file name's fixed offset, pid).
+pub fn parse_log_file_name(path: impl AsRef<Path>) -> Option<(String, Zoned, u32)> {
     let path = path.as_ref();
     let file_name = path.file_name()?.to_str()?;
 
@@ -205,7 +205,10 @@ pub fn parse_log_file_name(path: impl AsRef<Path>) -> Option<(String, DateTime<F
     let pid: u32 = pid_str.parse().ok()?;
 
     // Parse ISO 8601-basic with offset, no colons
-    let ts = DateTime::parse_from_str(ts_str, "%Y%m%dT%H%M%S%3f%z").ok()?;
+    let ts = jiff::fmt::strtime::parse(LOG_FILE_TIMESTAMP_FORMAT, ts_str)
+        .ok()?
+        .to_zoned()
+        .ok()?;
 
     Some((prefix.to_string(), ts, pid))
 }
@@ -224,11 +227,11 @@ struct CandidateLogFile {
 /// stale log file as protected whenever an unrelated process reuses the same PID. If the
 /// process start time is clearly after the log's embedded timestamp, the PID no longer
 /// refers to the process that created this file.
-fn pid_protects_log_file(sys: &System, pid: u32, log_timestamp: DateTime<FixedOffset>) -> bool {
+fn pid_protects_log_file(sys: &System, pid: u32, log_timestamp: Timestamp) -> bool {
     let Some(proc) = sys.process(Pid::from_u32(pid)) else {
         return false;
     };
-    let log_epoch_secs = log_timestamp.timestamp();
+    let log_epoch_secs = log_timestamp.as_second();
     let proc_start_secs = i64::try_from(proc.start_time()).unwrap_or(i64::MAX);
     if proc_start_secs > log_epoch_secs {
         debug!("PID {pid} likely reused: process start {proc_start_secs}s > log timestamp {log_epoch_secs}s");
@@ -272,7 +275,7 @@ fn run_log_directory_cleanup(cfg: LogDirConfig, log_dir: &Path) -> io::Result<()
     let mut total_bytes: u64 = 0;
     let mut candidate_deletion_bytes: u64 = 0;
 
-    let now = Utc::now();
+    let now = Timestamp::now();
     let mut n_log_files = 0usize;
 
     for entry in std::fs::read_dir(log_dir)? {
@@ -309,7 +312,8 @@ fn run_log_directory_cleanup(cfg: LogDirConfig, log_dir: &Path) -> io::Result<()
         total_bytes += size;
         n_log_files += 1;
 
-        let Ok(age) = (now - timestamp.to_utc()).to_std() else {
+        let timestamp = timestamp.timestamp();
+        let Ok(age) = Duration::try_from(now.duration_since(timestamp)) else {
             debug!("Skipping deletion for very new log file {path:?}");
             continue;
         };
@@ -407,8 +411,6 @@ fn run_log_directory_cleanup(cfg: LogDirConfig, log_dir: &Path) -> io::Result<()
 #[cfg(test)]
 mod tests {
 
-    use chrono::{Datelike, Timelike};
-
     use super::*;
 
     #[test]
@@ -427,7 +429,7 @@ mod tests {
             .unwrap()
             .strip_suffix(&format!("_{}.log", pid))
             .unwrap();
-        assert_eq!(ts_part, ts.format("%Y%m%dT%H%M%S%3f%z").to_string());
+        assert_eq!(ts_part, ts.strftime(LOG_FILE_TIMESTAMP_FORMAT).to_string());
     }
 
     #[test]
@@ -436,15 +438,15 @@ mod tests {
         let (base, ts, pid) = parse_log_file_name(fname).expect("parse");
         assert_eq!(base, "app_base");
         assert_eq!(pid, 12345);
-        assert_eq!(ts.format("%Y%m%dT%H%M%S%3f%z").to_string(), "20250915T083210123-0700");
+        assert_eq!(ts.strftime(LOG_FILE_TIMESTAMP_FORMAT).to_string(), "20250915T083210123-0700");
         assert_eq!(ts.year(), 2025);
         assert_eq!(ts.month(), 9);
         assert_eq!(ts.day(), 15);
         assert_eq!(ts.hour(), 8);
         assert_eq!(ts.minute(), 32);
         assert_eq!(ts.second(), 10);
-        assert_eq!(ts.timestamp_subsec_millis(), 123);
-        assert_eq!(ts.offset().local_minus_utc(), -7 * 3600);
+        assert_eq!(ts.millisecond(), 123);
+        assert_eq!(ts.offset().seconds(), -7 * 3600);
     }
 
     #[test]
@@ -453,7 +455,7 @@ mod tests {
         let (base, ts, pid) = parse_log_file_name(fname).expect("parse");
         assert_eq!(base, "my_cool_app");
         assert_eq!(pid, 999);
-        assert_eq!(ts.format("%Y%m%dT%H%M%S%3f%z").to_string(), "20240102T030405006+0530");
+        assert_eq!(ts.strftime(LOG_FILE_TIMESTAMP_FORMAT).to_string(), "20240102T030405006+0530");
     }
 
     #[test]

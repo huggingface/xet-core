@@ -1,4 +1,3 @@
-use chrono::SecondsFormat;
 use serde::Serialize;
 
 /// The wire body of `POST /v1/telemetry`.
@@ -30,7 +29,8 @@ impl TelemetryEnvelope {
     /// Stamps `time` with the current wall clock.
     pub fn new(event: &'static str, session_id: String, user_agent: String, metrics: serde_json::Value) -> Self {
         Self {
-            time: chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+            // RFC 3339 in UTC with exactly three fractional digits: 2026-01-02T03:04:05.678Z
+            time: format!("{:.3}", jiff::Timestamp::now()),
             event,
             session_id,
             user_agent,
@@ -62,6 +62,8 @@ mod tests {
         let v = serde_json::to_value(sample()).unwrap();
         let time = v["time"].as_str().unwrap();
         assert!(time.ends_with('Z'), "expected a UTC 'Z' suffix, got {time}");
-        chrono::DateTime::parse_from_rfc3339(time).expect("server parses this with parse_from_rfc3339");
+        time.parse::<jiff::Timestamp>().expect("time must be RFC 3339");
+        let fraction = time.rsplit_once('.').map(|(_, f)| f).unwrap_or_default();
+        assert_eq!(fraction.len(), "678Z".len(), "expected millisecond precision, got {time}");
     }
 }

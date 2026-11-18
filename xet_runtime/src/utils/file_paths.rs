@@ -1,8 +1,6 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use chrono::Local;
-
 /// A path buffer that can contain template variables like `{PID}` and `{TIMESTAMP}`.
 ///
 /// This type stores both the original template and its evaluated form. Templates are
@@ -89,7 +87,7 @@ impl TemplatedPathBuf {
     fn default_substitutes() -> [Substitute; 2] {
         [
             ("pid", Box::new(|| std::process::id().to_string())),
-            ("timestamp", Box::new(|| Local::now().fixed_offset().format("%Y-%m-%dT%H-%M-%S%z").to_string())),
+            ("timestamp", Box::new(|| jiff::Zoned::now().strftime("%Y-%m-%dT%H-%M-%S%z").to_string())),
         ]
     }
 
@@ -203,9 +201,12 @@ mod tests {
     #[test]
     fn test_timestamp_substitution_case_insensitive() {
         // Test that {TIMESTAMP}, {timestamp}, and {TimeStamp} all work
-        let timestamp = chrono::DateTime::parse_from_rfc3339("2009-02-13T23:31:30Z").unwrap();
+        let timestamp = "2009-02-13T23:31:30Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::UTC);
         let substitutes: [Substitute; 1] =
-            [("timestamp", Box::new(move || timestamp.format("%Y-%m-%dT%H-%M-%S%z").to_string()))];
+            [("timestamp", Box::new(move || timestamp.strftime("%Y-%m-%dT%H-%M-%S%z").to_string()))];
         for pattern in ["log_{TIMESTAMP}.txt", "log_{timestamp}.txt", "log_{TimeStamp}.txt"] {
             let result = TemplatedPathBuf::eval_impl(Path::new(pattern), &substitutes);
             assert!(result.ends_with("log_2009-02-13T23-31-30+0000.txt"));
@@ -215,10 +216,13 @@ mod tests {
     #[test]
     fn test_multiple_substitutions() {
         // Test that multiple occurrence of placeholders all get substituted
-        let timestamp = chrono::DateTime::parse_from_rfc3339("2009-02-13T23:31:30Z").unwrap();
+        let timestamp = "2009-02-13T23:31:30Z"
+            .parse::<jiff::Timestamp>()
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::UTC);
         let substitutes: [Substitute; 2] = [
             ("pid", Box::new(|| "999".to_string())),
-            ("timestamp", Box::new(move || timestamp.format("%Y-%m-%dT%H-%M-%S%z").to_string())),
+            ("timestamp", Box::new(move || timestamp.strftime("%Y-%m-%dT%H-%M-%S%z").to_string())),
         ];
 
         let result = TemplatedPathBuf::eval_impl(Path::new("/var/log/app_{pid}_{TIMESTAMP}.log"), &substitutes);

@@ -145,13 +145,49 @@ impl<T: ParsableConfigValue> ParsableConfigValue for Option<T> {
     }
 }
 
+/// Seconds in a month and a year, as `humantime` (which this parser replaced) counted them.
+const SECONDS_PER_MONTH: u64 = 2_630_016; // 30.44 days
+const SECONDS_PER_YEAR: u64 = 31_557_600; // 365.25 days
+
+/// Parse a human-readable duration such as `"500ms"`, `"30s"`, `"2m30s"`, `"1h 30m"`, `"14d"` or `"2 weeks"`.
+///
+/// Accepts jiff's "friendly" duration format (unit names like `ms`, `msec`, `s`, `sec`, `secs`, `m`,
+/// `min`, `h`, `hr`, `hours`, `d`, `days`, `w`, `weeks`, `month`, `y`, `years`, with or without
+/// spaces, plus fractions such as `"1.5s"`) and ISO 8601 durations (`"PT5S"`). Days and weeks are
+/// 24 hours and 7 days; months and years use the same fixed lengths as the `humantime` crate (30.44
+/// and 365.25 days), so values written for the earlier parser keep their meaning. A bare `"0"` is
+/// zero. Negative durations are rejected.
+pub fn parse_duration(value: &str) -> Result<std::time::Duration, String> {
+    let value = value.trim();
+    if value == "0" {
+        return Ok(std::time::Duration::ZERO);
+    }
+    let span: jiff::Span = value.parse().map_err(|e| format!("invalid duration {value:?}: {e}"))?;
+    if span.is_negative() {
+        return Err(format!("invalid duration {value:?}: negative durations are not supported"));
+    }
+    let years = span.get_years().unsigned_abs() as u64;
+    let months = span.get_months().unsigned_abs() as u64;
+    let rest = span
+        .years(0)
+        .months(0)
+        .to_duration(jiff::SpanRelativeTo::days_are_24_hours())
+        .map_err(|e| format!("invalid duration {value:?}: {e}"))?;
+    let rest = std::time::Duration::try_from(rest).map_err(|e| format!("invalid duration {value:?}: {e}"))?;
+    let calendar_secs = years
+        .checked_mul(SECONDS_PER_YEAR)
+        .and_then(|y| months.checked_mul(SECONDS_PER_MONTH).and_then(|m| y.checked_add(m)))
+        .ok_or_else(|| format!("invalid duration {value:?}: too large"))?;
+    rest.checked_add(std::time::Duration::from_secs(calendar_secs))
+        .ok_or_else(|| format!("invalid duration {value:?}: too large"))
+}
+
 /// Implement proper parsing for Duration types as well.
 ///
-/// Now the following suffixes are supported: s, ms, us, ns, m, h, d, etc.;
-/// see the humantime crate for the full list.
+/// Accepts suffixes such as ns, us, ms, s, m, h, d and w; see [`parse_duration`] for the full format.
 impl ParsableConfigValue for std::time::Duration {
     fn parse_user_value(value: &str) -> Option<Self> {
-        humantime::parse_duration(value).ok()
+        parse_duration(value).ok()
     }
 
     fn to_config_string(&self) -> String {
@@ -516,5 +552,41 @@ mod tests {
         assert_eq!(s, "/some/simple/path");
         let restored = TemplatedPathBuf::parse_user_value(&s).unwrap();
         assert_eq!(path.template_string(), restored.template_string());
+    }
+    #[test]
+    fn parse_duration_matches_the_previous_humantime_values() {
+        let cases = [
+            ("0", Duration::ZERO),
+            ("0s", Duration::ZERO),
+            ("500ms", Duration::from_millis(500)),
+            ("1 msec", Duration::from_millis(1)),
+            ("10us", Duration::from_micros(10)),
+            ("5ns", Duration::from_nanos(5)),
+            ("3secs", Duration::from_secs(3)),
+            (" 5s ", Duration::from_secs(5)),
+            ("2m30s", Duration::from_secs(150)),
+            ("15min", Duration::from_secs(900)),
+            ("1h 30m", Duration::from_secs(5400)),
+            ("1h30m", Duration::from_secs(5400)),
+            ("2hrs", Duration::from_secs(7200)),
+            ("1d", Duration::from_secs(86_400)),
+            ("1day 2h", Duration::from_secs(93_600)),
+            ("14d", Duration::from_secs(14 * 86_400)),
+            ("2 weeks", Duration::from_secs(14 * 86_400)),
+            ("1w", Duration::from_secs(7 * 86_400)),
+            ("1month", Duration::from_secs(2_630_016)),
+            ("1y", Duration::from_secs(31_557_600)),
+            ("1.5s", Duration::from_millis(1500)),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(parse_duration(input), Ok(expected), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn parse_duration_rejects_invalid_values() {
+        for input in ["", "120", "-1s", "abc", "5 parsecs"] {
+            assert!(parse_duration(input).is_err(), "{input:?}");
+        }
     }
 }
