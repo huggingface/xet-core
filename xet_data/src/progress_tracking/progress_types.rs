@@ -534,6 +534,20 @@ impl ItemProgressUpdater {
         }
     }
 
+    /// Give up on the item: its final size becomes the bytes completed so far, and the group total
+    /// drops by the rest. Completed bytes are left as they are, so progress never goes backwards.
+    ///
+    /// The caller must not report further bytes for this item.
+    pub(crate) fn abandon(&self) {
+        self.item.size_finalized.store(true, Ordering::Release);
+        let completed = self.item.bytes_completed.load(Ordering::Acquire);
+        let old_total = self.item.total_bytes.swap(completed, Ordering::AcqRel);
+        debug_assert_le!(completed, old_total);
+        self.group
+            .total_bytes
+            .fetch_sub(old_total.saturating_sub(completed), Ordering::Release);
+    }
+
     /// Update the total transfer (network) bytes for this item.
     pub fn update_transfer_size(&self, total: u64) {
         let result = self
@@ -806,6 +820,28 @@ mod tests {
         updater.update_item_size(100, false);
 
         assert_eq!(group.total_bytes.load(Ordering::Relaxed), 100);
+    }
+
+    #[test]
+    fn test_abandon_shrinks_total_to_bytes_completed() {
+        let group = Arc::new(GroupProgress::new());
+        let kept = group.new_item(UniqueId::new(), "kept.bin");
+        kept.update_item_size(100, true);
+        let abandoned = group.new_item(UniqueId::new(), "abandoned.bin");
+        abandoned.update_item_size(250, false);
+        abandoned.report_bytes_completed(40);
+
+        abandoned.abandon();
+
+        let report = abandoned.report();
+        assert_eq!((report.bytes_completed, report.total_bytes), (40, 40));
+        assert_eq!(group.total_bytes.load(Ordering::Relaxed), 140);
+        assert_eq!(group.total_bytes_completed.load(Ordering::Relaxed), 40);
+
+        // The shrunken size is final: later growth is ignored.
+        abandoned.update_item_size(300, false);
+        assert_eq!(abandoned.report().total_bytes, 40);
+        assert_eq!(group.total_bytes.load(Ordering::Relaxed), 140);
     }
 
     #[test]

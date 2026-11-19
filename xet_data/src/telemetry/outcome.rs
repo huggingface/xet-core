@@ -89,6 +89,7 @@ pub fn error_class(error: &DataError) -> &'static str {
     }
 
     match error {
+        DataError::SharedUploadError(error) => error_class(error),
         DataError::AuthError(_) => "auth",
         DataError::IOError(_) => "io",
         DataError::FormatError(_) | DataError::HashStringParsingFailure(_) | DataError::FileNotCleanedError(_) => {

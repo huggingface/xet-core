@@ -91,6 +91,10 @@ jobs:
       - name: Build and Test
         run: |
           cargo test --verbose --no-fail-fast --features "strict simulation internal-tools git-xet-for-integration-test"
+      - name: Test upload storage completion without debug progress assertions
+        run: |
+          cargo --config 'profile.dev.package.xet-data.debug-assertions=false' test --locked -p xet-data --test test_upload_storage_completion -- --ignored
+          cargo --config 'profile.dev.package.xet-data.debug-assertions=false' test --locked -p xet-data --lib test_finalize_rejects_incomplete_xorb_before_publishing_shards
       - name: Build and Test hf_xet
         run: |
           # The hf_xet unit tests embed Python (pyo3 `auto-initialize`), so they link against libpython.
