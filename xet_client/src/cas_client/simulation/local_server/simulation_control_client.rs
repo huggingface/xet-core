@@ -249,6 +249,15 @@ impl Client for SimulationControlClient {
             .await
     }
 
+    async fn get_chunk_layout(
+        &self,
+        file_id: &xet_core_structures::merklehash::MerkleHash,
+        bytes_range: crate::cas_types::FileRange,
+        serialized: bool,
+    ) -> Result<Option<crate::cas_types::ChunkLayoutResponse>> {
+        self.remote_client.get_chunk_layout(file_id, bytes_range, serialized).await
+    }
+
     async fn get_file_chunk_hashes(
         &self,
         file_id: &MerkleHash,
