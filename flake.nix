@@ -41,7 +41,10 @@
           nightly.rustfmt
         ];
 
-        devPython = pkgs.python3.withPackages (ps: [ ps.pytest ]);
+        devPython = pkgs.python3.withPackages (ps: [
+          ps.pytest
+          ps.ipython
+        ]);
       in
       {
         devShells.default = pkgs.mkShell {
