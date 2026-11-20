@@ -82,6 +82,9 @@ pub enum DataError {
     #[error("Auth error: {0}")]
     AuthError(#[from] AuthError),
 
+    #[error("Resume download error: {0}")]
+    ResumeError(String),
+
     #[error("Permit acquisition error: {0}")]
     PermitAcquisitionError(#[from] AcquireError),
 

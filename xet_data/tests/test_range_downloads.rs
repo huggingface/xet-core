@@ -155,7 +155,7 @@ mod tests {
         let xfi_no_size = XetFileInfo::new_hash_only(h.xfi.hash().to_string());
 
         let out_path = h._env.base_dir.join("unknown_size.bin");
-        let (_id, n_bytes) = h.session.download_file(&xfi_no_size, &out_path).await.unwrap();
+        let (_id, n_bytes) = h.session.download_file(&xfi_no_size, &out_path, false).await.unwrap();
 
         assert_eq!(n_bytes, h.data.len() as u64);
         assert_eq!(fs::read(&out_path).unwrap(), h.data);
@@ -181,7 +181,7 @@ mod tests {
         let wrong_size = XetFileInfo::new(h.xfi.hash().to_string(), 42);
 
         let out_path = h._env.base_dir.join("mismatch.bin");
-        let err = h.session.download_file(&wrong_size, &out_path).await.unwrap_err();
+        let err = h.session.download_file(&wrong_size, &out_path, false).await.unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("mismatch"), "Expected size mismatch error, got: {msg}");
     }

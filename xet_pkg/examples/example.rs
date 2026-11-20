@@ -116,7 +116,7 @@ async fn download_files(metadata_file: PathBuf, output_dir: PathBuf, endpoint: O
     let mut handles: Vec<XetFileDownload> = Vec::with_capacity(n_files);
     for m in &metadata {
         let dest = output_dir.join(m.tracking_name.as_deref().unwrap_or("file"));
-        handles.push(group.download_file_to_path(m.xet_info.clone(), dest).await?);
+        handles.push(group.download_file_to_path(m.xet_info.clone(), dest, false).await?);
     }
 
     // Spawn a task to print progress while the main task awaits finish().

@@ -93,7 +93,7 @@ pub fn download_file(opts: DownloadFileOptions) -> Result<DownloadFileResult, Na
 
     let dest_path = std::path::PathBuf::from(&opts.dest_path);
     group
-        .download_file_to_path_blocking(file_info, dest_path.clone())
+        .download_file_to_path_blocking(file_info, dest_path.clone(), false)
         .map_err(to_napi_err)?;
     let report = group.finish_blocking().map_err(to_napi_err)?;
 

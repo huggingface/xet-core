@@ -126,7 +126,7 @@
 //!     .with_token_info("read-token", 1_700_000_000)
 //!     .build_blocking()?;
 //! let info = meta.xet_info.clone();
-//! let dl_handle = group.download_file_to_path_blocking(info, "out/file.bin".into())?;
+//! let dl_handle = group.download_file_to_path_blocking(info, "out/file.bin".into(), false)?;
 //! let finish_report = group.finish_blocking()?;
 //! let r = finish_report.downloads.get(&dl_handle.task_id()).unwrap();
 //! # Ok(())
@@ -162,7 +162,7 @@
 //!     .build()
 //!     .await?;
 //! let info = meta.xet_info.clone();
-//! let dl_handle = group.download_file_to_path(info, "out/file.bin".into()).await?;
+//! let dl_handle = group.download_file_to_path(info, "out/file.bin".into(), false).await?;
 //! let finish_report = group.finish().await?;
 //! let r = finish_report.downloads.get(&dl_handle.task_id()).unwrap();
 //! # Ok(())

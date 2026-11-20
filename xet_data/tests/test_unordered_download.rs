@@ -258,7 +258,7 @@ mod tests {
         tokio::task::yield_now().await;
 
         let out_path = env.base_dir.join("after_drop.txt");
-        let (_id2, n_bytes) = download_session.download_file(&xfi, &out_path).await.unwrap();
+        let (_id2, n_bytes) = download_session.download_file(&xfi, &out_path, false).await.unwrap();
         assert_eq!(n_bytes, original_data.len() as u64);
         assert_eq!(fs::read(&out_path).unwrap(), original_data);
     }
@@ -269,7 +269,7 @@ mod tests {
         let (env, download_session, xfi) = setup_single("compare_test", &original_data).await;
 
         let out_path = env.base_dir.join("sequential.bin");
-        let (_id, _) = download_session.download_file(&xfi, &out_path).await.unwrap();
+        let (_id, _) = download_session.download_file(&xfi, &out_path, false).await.unwrap();
         let sequential_result = fs::read(&out_path).unwrap();
 
         let (_id2, mut stream) = download_session.download_unordered_stream(&xfi, None).await.unwrap();

@@ -192,6 +192,7 @@ impl XetFileDownloadGroup {
     ///   [`XetUploadCommit::commit`](crate::xet_session::XetUploadCommit::commit).
     /// * `dest_path` – Local path where the downloaded file will be written. Parent directories are created
     ///   automatically.
+    /// * `resume` - If `dest_path` exists appends it instead of truncating
     ///
     /// Returns a [`XetFileDownload`] that can be used to poll status and per-file
     /// progress without taking the GIL.
@@ -205,18 +206,22 @@ impl XetFileDownloadGroup {
         &self,
         file_info: XetFileInfo,
         dest_path: PathBuf,
+        resume: bool,
     ) -> Result<XetFileDownload, XetError> {
         info!(
             group_id = %self.id(),
             dest_path = ?dest_path,
             hash = %file_info.hash,
+            resume = resume,
             "Download file to path"
         );
         let inner = self.inner.clone();
         let task_runtime = self.task_runtime.clone();
         self.task_runtime
             .bridge_async("download_file_to_path", async move {
-                inner.start_download_file_to_path(file_info, dest_path, &task_runtime).await
+                inner
+                    .start_download_file_to_path(file_info, dest_path, resume, &task_runtime)
+                    .await
             })
             .await
     }
@@ -288,17 +293,21 @@ impl XetFileDownloadGroup {
         &self,
         file_info: XetFileInfo,
         dest_path: PathBuf,
+        resume: bool,
     ) -> Result<XetFileDownload, XetError> {
         info!(
             group_id = %self.id(),
             dest_path = ?dest_path,
             hash = %file_info.hash,
+            resume = resume,
             "Download file to path"
         );
         let inner = self.inner.clone();
         let task_runtime = self.task_runtime.clone();
         self.task_runtime.bridge_sync("download_file_to_path_blocking", async move {
-            inner.start_download_file_to_path(file_info, dest_path, &task_runtime).await
+            inner
+                .start_download_file_to_path(file_info, dest_path, resume, &task_runtime)
+                .await
         })
     }
 
@@ -351,12 +360,13 @@ impl XetFileDownloadGroupInner {
         self: &Arc<Self>,
         file_info: XetFileInfo,
         dest_path: PathBuf,
+        resume: bool,
         parent_task_runtime: &Arc<TaskRuntime>,
     ) -> Result<XetFileDownload, XetError> {
         let absolute_path = std::path::absolute(dest_path)?;
         let (task_id, join_handle) = self
             .download_session
-            .download_file_background(file_info.clone(), absolute_path.clone())
+            .download_file_background(file_info.clone(), absolute_path.clone(), resume)
             .await?;
 
         let task_runtime = parent_task_runtime.child()?;
@@ -602,6 +612,7 @@ mod tests {
                     sha256: None,
                 },
                 std::path::PathBuf::from("dest.bin"),
+                false,
             )
             .await
             .unwrap_err();
@@ -623,6 +634,7 @@ mod tests {
                     sha256: None,
                 },
                 std::path::PathBuf::from("dest.bin"),
+                false,
             )
             .await
             .unwrap_err();
@@ -643,6 +655,7 @@ mod tests {
                     sha256: None,
                 },
                 std::path::PathBuf::from("dest.bin"),
+                false,
             )
             .await
             .unwrap_err();
@@ -680,7 +693,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let handle = group.download_file_to_path(file_info, dest.clone()).await.unwrap();
+        let handle = group.download_file_to_path(file_info, dest.clone(), false).await.unwrap();
         assert!(matches!(handle.status().unwrap(), XetTaskState::Running | XetTaskState::Completed));
         group.finish().await.unwrap();
         assert!(matches!(handle.status().unwrap(), XetTaskState::Completed));
@@ -709,6 +722,7 @@ mod tests {
                     sha256: None,
                 },
                 temp.path().join("missing.bin"),
+                false,
             )
             .await
             .unwrap();
@@ -734,7 +748,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let handle = group.download_file_to_path(file_info, dest).await.unwrap();
+        let handle = group.download_file_to_path(file_info, dest, false).await.unwrap();
 
         let mut reports = HashMap::new();
         for _ in 0..50 {
@@ -792,8 +806,8 @@ mod tests {
             .build()
             .await
             .unwrap();
-        group.download_file_to_path(file_a_info, dest_a.clone()).await.unwrap();
-        group.download_file_to_path(file_b_info, dest_b.clone()).await.unwrap();
+        group.download_file_to_path(file_a_info, dest_a.clone(), false).await.unwrap();
+        group.download_file_to_path(file_b_info, dest_b.clone(), false).await.unwrap();
         group.finish().await.unwrap();
 
         assert_eq!(std::fs::read(&dest_a).unwrap(), data_a);
@@ -818,7 +832,7 @@ mod tests {
             .await
             .unwrap();
         let progress_observer = group.clone();
-        group.download_file_to_path(file_info, dest).await.unwrap();
+        group.download_file_to_path(file_info, dest, false).await.unwrap();
         let finish_report = group.finish().await.unwrap();
         assert_eq!(finish_report.progress.total_bytes, original.len() as u64);
         assert_eq!(finish_report.progress.total_bytes_completed, original.len() as u64);
@@ -858,7 +872,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let handle = group.download_file_to_path(file_info, dest).await.unwrap();
+        let handle = group.download_file_to_path(file_info, dest, false).await.unwrap();
         let report = group.finish().await.unwrap();
         let result = report
             .downloads
@@ -882,7 +896,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let handle = group.download_file_to_path(file_info, dest).await.unwrap();
+        let handle = group.download_file_to_path(file_info, dest, false).await.unwrap();
         assert!(handle.result().is_none(), "result must be None before finish()");
         group.finish().await.unwrap();
     }
@@ -903,7 +917,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let handle = group.download_file_to_path(file_info.clone(), dest).await.unwrap();
+        let handle = group.download_file_to_path(file_info.clone(), dest, false).await.unwrap();
         group.finish().await.unwrap();
         let result = handle.result().expect("result must be set after finish()");
         let dl = result.unwrap();
@@ -926,7 +940,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let handle = group.download_file_to_path(file_info, dest).await.unwrap();
+        let handle = group.download_file_to_path(file_info, dest, false).await.unwrap();
         let first = handle.finish().await.unwrap();
         let second = handle.finish().await.unwrap();
         assert_eq!(first.file_info.hash, second.file_info.hash);
@@ -973,7 +987,7 @@ mod tests {
                 .build()
                 .await
                 .unwrap();
-            group.download_file_to_path(file_info, dest.clone()).await.unwrap();
+            group.download_file_to_path(file_info, dest.clone(), false).await.unwrap();
             group.finish().await.unwrap();
             assert_eq!(std::fs::read(&dest).unwrap(), data);
         });
@@ -1014,7 +1028,7 @@ mod tests {
                 .build()
                 .await
                 .unwrap();
-            group.download_file_to_path(file_info, dest.clone()).await.unwrap();
+            group.download_file_to_path(file_info, dest.clone(), false).await.unwrap();
             group.finish().await.unwrap();
             assert_eq!(std::fs::read(&dest).unwrap(), data);
         });
@@ -1040,7 +1054,7 @@ mod tests {
 
         let dest = temp.path().join("downloaded.bin");
         let group = session.new_file_download_group()?.with_endpoint(&endpoint).build_blocking()?;
-        group.download_file_to_path_blocking(file_info, dest.clone())?;
+        group.download_file_to_path_blocking(file_info, dest.clone(), false)?;
         group.finish_blocking()?;
 
         assert_eq!(std::fs::read(&dest)?, original);
@@ -1072,8 +1086,8 @@ mod tests {
         let dest_a = temp.path().join("a_out.bin");
         let dest_b = temp.path().join("b_out.bin");
         let group = session.new_file_download_group()?.with_endpoint(&endpoint).build_blocking()?;
-        group.download_file_to_path_blocking(file_a_info, dest_a.clone())?;
-        group.download_file_to_path_blocking(file_b_info, dest_b.clone())?;
+        group.download_file_to_path_blocking(file_a_info, dest_a.clone(), false)?;
+        group.download_file_to_path_blocking(file_b_info, dest_b.clone(), false)?;
         group.finish_blocking()?;
 
         assert_eq!(std::fs::read(&dest_a)?, data_a);
@@ -1092,7 +1106,7 @@ mod tests {
         let dest = temp.path().join("out.bin");
         let group = session.new_file_download_group()?.with_endpoint(&endpoint).build_blocking()?;
         let progress_observer = group.clone();
-        group.download_file_to_path_blocking(file_info, dest)?;
+        group.download_file_to_path_blocking(file_info, dest, false)?;
         group.finish_blocking()?;
 
         std::thread::sleep(
@@ -1121,7 +1135,7 @@ mod tests {
         let file_info = upload_bytes_blocking(&session, &endpoint, data, "file.bin")?;
         let dest = temp.path().join("out.bin");
         let group = session.new_file_download_group()?.with_endpoint(&endpoint).build_blocking()?;
-        let handle = group.download_file_to_path_blocking(file_info.clone(), dest)?;
+        let handle = group.download_file_to_path_blocking(file_info.clone(), dest, false)?;
 
         // Before finish, per-task result is not available yet.
         assert!(handle.result().is_none());
@@ -1161,7 +1175,7 @@ mod tests {
                 .with_endpoint(&endpoint)
                 .build_blocking()
                 .unwrap();
-            group.download_file_to_path_blocking(file_info, dest.clone()).unwrap();
+            group.download_file_to_path_blocking(file_info, dest.clone(), false).unwrap();
             group.finish_blocking().unwrap();
             assert_eq!(std::fs::read(&dest).unwrap(), data);
         }));
@@ -1191,7 +1205,7 @@ mod tests {
             sha256: None,
         };
         let err = group
-            .download_file_to_path_blocking(file_info, PathBuf::from("/nonexistent"))
+            .download_file_to_path_blocking(file_info, PathBuf::from("/nonexistent"), false)
             .err()
             .unwrap();
         assert!(matches!(err, XetError::WrongRuntimeMode(_)));
@@ -1214,7 +1228,7 @@ mod tests {
             sha256: None,
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            rt.block_on(async { group.download_file_to_path_blocking(file_info, PathBuf::from("/nonexistent")) })
+            rt.block_on(async { group.download_file_to_path_blocking(file_info, PathBuf::from("/nonexistent"), false) })
         }));
         assert!(result.is_err(), "download_file_to_path_blocking() must panic when called from async");
     }

@@ -103,6 +103,19 @@ impl GroupProgress {
         })
     }
 
+    /// Unregisters an item and withdraws its logical bytes from the group totals, so that the item can be
+    /// registered again under the same id without counting the file twice.
+    pub fn remove_item(&self, id: UniqueId) {
+        let Some(item) = self.items.lock().unwrap().remove(&id) else {
+            return;
+        };
+
+        self.total_bytes_completed
+            .fetch_sub(item.bytes_completed.load(Ordering::Acquire), Ordering::Release);
+        self.total_bytes
+            .fetch_sub(item.total_bytes.load(Ordering::Acquire), Ordering::Release);
+    }
+
     /// Snapshot of aggregate progress. Reads completions first (Acquire), then totals
     /// to reduce transient sampling skew.
     ///
@@ -701,6 +714,45 @@ mod tests {
 
         assert_eq!(group.total_transfer_bytes.load(Ordering::Relaxed), 80);
         assert_eq!(group.total_transfer_bytes_completed.load(Ordering::Relaxed), 30);
+    }
+
+    #[test]
+    fn test_remove_item() {
+        let group = Arc::new(GroupProgress::new());
+        let id = UniqueId::new();
+
+        let first = group.new_item(id, "file.bin");
+        first.update_item_size(60, true);
+        first.report_bytes_completed(60);
+        first.update_transfer_size(40);
+        first.report_transfer_bytes_completed(40);
+
+        group.remove_item(id);
+        assert_eq!(group.n_items(), 0);
+        assert_eq!(group.total_bytes.load(Ordering::Relaxed), 0);
+        assert_eq!(group.total_bytes_completed.load(Ordering::Relaxed), 0);
+        assert_eq!(group.total_transfer_bytes.load(Ordering::Relaxed), 40);
+        assert_eq!(group.total_transfer_bytes_completed.load(Ordering::Relaxed), 40);
+
+        let second = group.new_item(id, "file.bin");
+        second.update_item_size(100, true);
+        second.report_bytes_completed(100);
+
+        let report = group.report();
+        assert_eq!(report.total_bytes, 100);
+        assert_eq!(report.total_bytes_completed, 100);
+        assert!(group.all_items_complete());
+    }
+
+    #[test]
+    fn test_remove_item_unknown_id_is_noop() {
+        let group = Arc::new(GroupProgress::new());
+        let updater = group.new_item(UniqueId::new(), "file.bin");
+        updater.update_item_size(100, true);
+
+        group.remove_item(UniqueId::new());
+        assert_eq!(group.n_items(), 1);
+        assert_eq!(group.total_bytes.load(Ordering::Relaxed), 100);
     }
 
     /// The case that motivates inferring an outcome at all: a download that transferred everything

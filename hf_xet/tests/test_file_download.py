@@ -137,3 +137,67 @@ class TestFileDownloadHandle:
         group.wait_to_finish()
 
 
+# ── XetFileDownload resume ────────────────────────────────────────────────────
+
+class TestFileDownloadResume:
+    def test_resume_from_partial_file(self, endpoint, tmp_path):
+        data = b"resume download: first part | second part | final"
+        info = upload_bytes_get_info(endpoint, data)
+        dest = tmp_path / "out.bin"
+
+        # Simulate an interrupted download: write the first 20 bytes.
+        partial = data[:20]
+        dest.write_bytes(partial)
+
+        with hf_xet.XetSession().new_file_download_group(endpoint=endpoint) as group:
+            group.start_download_file(info, str(dest), resume=True)
+
+        assert dest.read_bytes() == data
+
+    def test_resume_empty_file_is_like_fresh_download(self, endpoint, tmp_path):
+        data = b"empty file resume should just do a full download"
+        info = upload_bytes_get_info(endpoint, data)
+        dest = tmp_path / "out.bin"
+        dest.write_bytes(b"")  # zero-length file
+
+        with hf_xet.XetSession().new_file_download_group(endpoint=endpoint) as group:
+            group.start_download_file(info, str(dest), resume=True)
+
+        assert dest.read_bytes() == data
+
+    def test_resume_when_file_already_complete(self, endpoint, tmp_path):
+        data = b"already complete, resume should be a no-op"
+        info = upload_bytes_get_info(endpoint, data)
+        dest = tmp_path / "out.bin"
+        dest.write_bytes(data)  # file already fully written
+
+        with hf_xet.XetSession().new_file_download_group(endpoint=endpoint) as group:
+            group.start_download_file(info, str(dest), resume=True)
+
+        assert dest.read_bytes() == data
+
+    def test_resume_file_does_not_exist(self, endpoint, tmp_path):
+        data = b"resume with no file falls back to fresh download"
+        info = upload_bytes_get_info(endpoint, data)
+        dest = tmp_path / "out.bin"
+        # dest does not exist — resume=True should still work
+
+        with hf_xet.XetSession().new_file_download_group(endpoint=endpoint) as group:
+            group.start_download_file(info, str(dest), resume=True)
+
+        assert dest.read_bytes() == data
+
+    def test_resume_result_has_correct_file_size(self, endpoint, tmp_path):
+        data = b"resume result check"
+        info = upload_bytes_get_info(endpoint, data)
+        dest = tmp_path / "out.bin"
+        dest.write_bytes(data[:20])
+
+        group = hf_xet.XetSession().new_file_download_group(endpoint=endpoint)
+        h = group.start_download_file(info, str(dest), resume=True)
+        group.wait_to_finish()
+        result = h.result()
+        assert result.file_info.file_size == len(data)
+        assert result.file_info.hash
+
+
