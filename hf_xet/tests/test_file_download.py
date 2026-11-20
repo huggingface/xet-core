@@ -187,6 +187,25 @@ class TestFileDownloadResume:
 
         assert dest.read_bytes() == data
 
+    def test_resume_counts_in_group_progress(self, endpoint, tmp_path):
+        data = b"resume counts: first part | second part | final part"
+        info = upload_bytes_get_info(endpoint, data)
+        resumed = tmp_path / "resumed.bin"
+        resumed.write_bytes(data[:20])
+        corrupt = tmp_path / "corrupt.bin"
+        corrupt.write_bytes(b"x" * 20)
+        fresh = tmp_path / "fresh.bin"  # does not exist, so it is a fresh download
+
+        with hf_xet.XetSession().new_file_download_group(endpoint=endpoint) as group:
+            for dest in (resumed, corrupt, fresh):
+                group.start_download_file(info, str(dest), resume=True)
+
+        for dest in (resumed, corrupt, fresh):
+            assert dest.read_bytes() == data
+        progress = group.progress()
+        assert progress.resumed_files == 2
+        assert progress.resume_fallback_files == 1
+
     def test_resume_result_has_correct_file_size(self, endpoint, tmp_path):
         data = b"resume result check"
         info = upload_bytes_get_info(endpoint, data)

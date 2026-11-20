@@ -340,6 +340,8 @@ mod tests {
             total_transfer_bytes,
             total_transfer_bytes_completed,
             total_transfer_bytes_completion_rate: None,
+            resumed_files: 0,
+            resume_fallback_files: 0,
             shard: None,
         }
     }

@@ -368,6 +368,9 @@ impl FileDownloadSession {
         // An empty or missing local file has nothing to resume from, so it is a fresh download and
         // needs no verification.
         let resume = resume && std::fs::metadata(write_path).is_ok_and(|m| m.len() > 0);
+        if resume {
+            self.progress.inc_resumed_files();
+        }
         let n_bytes = self.download_file_with_id(file_info, write_path, resume, id).await?;
         if !resume || self.verify_local_file(file_info, write_path).await? {
             return Ok(n_bytes);
@@ -379,6 +382,7 @@ impl FileDownloadSession {
             "Resumed download failed hash verification; downloading from scratch"
         );
 
+        self.progress.inc_resume_fallback();
         self.progress.remove_item(id);
         self.download_file_with_id(file_info, write_path, false, id).await
     }
@@ -639,6 +643,12 @@ mod tests {
 
                 assert_eq!(n_bytes, original_data.len() as u64);
                 assert_eq!(read(&out_path).unwrap(), original_data);
+
+                let group = session.report();
+                assert_eq!(group.resumed_files, 1);
+                assert_eq!(group.resume_fallback_files, 0);
+                // Only the part after the local prefix was downloaded.
+                assert_eq!(group.total_bytes, (original_data.len() - partial_size) as u64);
             })
             .unwrap();
     }
@@ -664,6 +674,8 @@ mod tests {
 
                 assert_eq!(n_bytes, original_data.len() as u64);
                 assert_eq!(read(&out_path).unwrap(), original_data);
+                // An empty local file has nothing to resume from, so it is not counted as a resume.
+                assert_eq!(session.report().resumed_files, 0);
             })
             .unwrap();
     }
@@ -724,6 +736,8 @@ mod tests {
                 assert_eq!(group.total_bytes, original_data.len() as u64);
                 assert_eq!(group.total_bytes_completed, original_data.len() as u64);
                 assert_eq!(session.n_items(), 1);
+                assert_eq!(group.resumed_files, 1);
+                assert_eq!(group.resume_fallback_files, 1);
             })
             .unwrap();
     }
