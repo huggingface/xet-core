@@ -64,7 +64,8 @@ struct FileDependency {
 /// are fully uploaded.
 #[derive(Default)]
 struct CompletionTrackerImpl {
-    files: Vec<FileDependency>,
+    /// Indexed by file id; `None` once the file is aborted.
+    files: Vec<Option<FileDependency>>,
     xorbs: MerkleHashMap<XorbDependency>,
 
     total_upload_bytes: u64,
@@ -106,14 +107,16 @@ impl CompletionTrackerImpl {
             remaining_xorbs_parts: MerkleHashMap::new(),
         };
 
-        self.files.push(file_dependency);
+        self.files.push(Some(file_dependency));
         self.total_bytes += total_bytes;
 
         file_id
     }
 
     fn increment_file_size(&mut self, file_id: CompletionTrackerFileId, size_increment: u64) {
-        let file_entry = &mut self.files[file_id as usize];
+        let Some(file_entry) = &mut self.files[file_id as usize] else {
+            return;
+        };
 
         if file_entry.is_final_size_known {
             return;
@@ -132,7 +135,9 @@ impl CompletionTrackerImpl {
         let mut file_bytes_processed = 0;
 
         for dep in dependencies {
-            let file_entry = &mut self.files[dep.file_id as usize];
+            let Some(file_entry) = &mut self.files[dep.file_id as usize] else {
+                continue;
+            };
 
             if dep.is_external {
                 file_entry.completed_bytes += dep.n_bytes;
@@ -208,7 +213,9 @@ impl CompletionTrackerImpl {
         let mut file_bytes_processed = 0;
 
         for file_id in file_indices {
-            let file_entry = &mut self.files[file_id];
+            let Some(file_entry) = &mut self.files[file_id] else {
+                continue;
+            };
 
             debug_assert!(file_entry.remaining_xorbs_parts.contains_key(&xorb_hash));
 
@@ -260,7 +267,9 @@ impl CompletionTrackerImpl {
         let mut file_bytes_processed = 0;
 
         for &file_id in entry.file_indices.iter() {
-            let file_entry = &mut self.files[file_id];
+            let Some(file_entry) = &mut self.files[file_id] else {
+                continue;
+            };
 
             debug_assert!(file_entry.remaining_xorbs_parts.contains_key(&xorb_hash));
 
@@ -303,7 +312,7 @@ impl CompletionTrackerImpl {
 
     fn status(&self) -> (u64, u64) {
         let (mut sum_completed, mut sum_total) = (0, 0);
-        for file in &self.files {
+        for file in self.files.iter().flatten() {
             sum_completed += file.completed_bytes;
             sum_total += file.total_bytes;
         }
@@ -325,6 +334,9 @@ impl CompletionTrackerImpl {
 
     fn assert_complete(&self) {
         for (idx, file) in self.files.iter().enumerate() {
+            let Some(file) = file else {
+                continue;
+            };
             assert_eq!(
                 file.completed_bytes, file.total_bytes,
                 "File #{} ({}, {}) is not fully completed: {}/{} bytes",
@@ -349,6 +361,17 @@ impl CompletionTrackerImpl {
             );
         }
     }
+
+    /// Removes a file and its bytes from the totals.
+    /// Later updates naming the file are ignored.
+    fn abort_file(&mut self, file_id: CompletionTrackerFileId) -> Option<FileDependency> {
+        let file_entry = self.files[file_id as usize].take()?;
+
+        self.total_bytes -= file_entry.total_bytes;
+        self.total_bytes_completed -= file_entry.completed_bytes;
+
+        Some(file_entry)
+    }
 }
 
 impl CompletionTracker {
@@ -368,6 +391,16 @@ impl CompletionTracker {
         let updater = self.group_progress.new_item(id, file_name);
         let mut update_lock = self.inner.lock().unwrap();
         update_lock.register_new_file(updater, file_byte_size)
+    }
+
+    /// Gives up on a file: drops it from the totals, the progress report, and completeness
+    /// checks. Xorbs it already registered are still uploaded.
+    pub fn abort_file(&self, file_id: CompletionTrackerFileId) {
+        let mut update_lock = self.inner.lock().unwrap();
+        if let Some(file_entry) = update_lock.abort_file(file_id) {
+            // Still under the lock, so no update for this file can race the removal.
+            self.group_progress.remove_file_upload_progress(file_entry.tracking_id);
+        }
     }
 
     pub fn increment_file_size(&self, file_id: CompletionTrackerFileId, size_increment: u64) {
@@ -901,5 +934,34 @@ mod tests {
 
         tracker.assert_complete();
         tracker.progress().assert_complete();
+    }
+
+    #[test]
+    fn test_abort_file_drops_its_bytes_and_ignores_later_updates() {
+        let tracker = CompletionTracker::new(UploadGroupProgress::new());
+
+        // 100 bytes so far, 40 of them in xorb `x`, which is half uploaded.
+        let file_id = tracker.register_new_file(UniqueId::new(), "file", None);
+        tracker.increment_file_size(file_id, 100);
+        let x = MerkleHash::random_from_seed(1);
+        tracker.register_new_xorb(x, 40);
+        tracker.register_dependencies(&[FileXorbDependency {
+            file_id,
+            xorb_hash: x,
+            n_bytes: 40,
+            is_external: false,
+        }]);
+        tracker.register_xorb_upload_progress(x, 20);
+
+        tracker.abort_file(file_id);
+
+        // Later updates naming the file are ignored; xorb `x` still counts as transferred.
+        tracker.increment_file_size(file_id, 10);
+        tracker.register_xorb_upload_completion(x);
+        assert_eq!(tracker.status(), (0, 0));
+        let report = tracker.progress().file_data.report();
+        assert_eq!((report.total_bytes_completed, report.total_bytes), (0, 0));
+        assert_eq!((report.total_transfer_bytes_completed, report.total_transfer_bytes), (40, 40));
+        tracker.assert_complete();
     }
 }

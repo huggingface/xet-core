@@ -103,6 +103,22 @@ impl GroupProgress {
         })
     }
 
+    /// Removes an item and its bytes from the group totals.
+    pub fn remove_item(&self, id: UniqueId) {
+        let mut items = self.items.lock().unwrap();
+        let Some(item) = items.remove(&id) else {
+            return;
+        };
+        self.total_bytes_completed
+            .fetch_sub(item.bytes_completed.load(Ordering::Acquire), Ordering::Release);
+        self.total_bytes
+            .fetch_sub(item.total_bytes.load(Ordering::Acquire), Ordering::Release);
+        self.total_transfer_bytes_completed
+            .fetch_sub(item.transfer_bytes_completed.load(Ordering::Acquire), Ordering::Release);
+        self.total_transfer_bytes
+            .fetch_sub(item.transfer_bytes.load(Ordering::Acquire), Ordering::Release);
+    }
+
     /// Snapshot of aggregate progress. Reads completions first (Acquire), then totals
     /// to reduce transient sampling skew.
     ///
@@ -113,10 +129,13 @@ impl GroupProgress {
     /// not strictly idempotent. Rate fields remain `None` until enough speed
     /// observations have been collected.
     pub fn report(&self) -> GroupProgressReport {
+        // Hold the items lock while reading so the snapshot cannot interleave with `remove_item`.
+        let items = self.items.lock().unwrap();
         let total_bytes_completed = self.total_bytes_completed.load(Ordering::Acquire);
         let total_transfer_bytes_completed = self.total_transfer_bytes_completed.load(Ordering::Acquire);
         let total_bytes = self.total_bytes.load(Ordering::Acquire);
         let total_transfer_bytes = self.total_transfer_bytes.load(Ordering::Acquire);
+        drop(items);
 
         debug_assert_le!(total_bytes_completed, total_bytes);
         debug_assert_le!(total_transfer_bytes_completed, total_transfer_bytes);
@@ -184,6 +203,8 @@ impl GroupProgress {
     pub fn assert_complete(&self) {
         #[cfg(debug_assertions)]
         {
+            // Hold the items lock throughout so the check cannot interleave with `remove_item`.
+            let items = self.items.lock().unwrap();
             let total_bytes_completed = self.total_bytes_completed.load(Ordering::Acquire);
             let total_bytes = self.total_bytes.load(Ordering::Acquire);
             assert_eq!(
@@ -198,7 +219,6 @@ impl GroupProgress {
                 "GroupProgress not complete: total_transfer_bytes_completed={total_transfer_bytes_completed} != total_transfer_bytes={total_transfer_bytes}"
             );
 
-            let items = self.items.lock().unwrap();
             for (id, item) in items.iter() {
                 let completed = item.bytes_completed.load(Ordering::Acquire);
                 let total = item.total_bytes.load(Ordering::Acquire);
@@ -490,6 +510,11 @@ impl UploadGroupProgress {
     pub fn register_shard_upload_progress(&self, id: UniqueId, event: &ShardUploadEvent) {
         self.shards.update(id, event)
     }
+
+    /// Removes a file's progress item; see [`GroupProgress::remove_item`].
+    pub fn remove_file_upload_progress(&self, id: UniqueId) {
+        self.file_data.remove_item(id)
+    }
 }
 
 /// Handle for reporting progress on a single item. All progress updates
@@ -689,6 +714,28 @@ mod tests {
 
         assert_eq!(updater.total_bytes_completed(), 50);
         assert_eq!(group.total_bytes_completed.load(Ordering::Relaxed), 50);
+    }
+
+    #[test]
+    fn test_remove_item_drops_its_progress() {
+        let group = Arc::new(GroupProgress::new());
+        let done = group.new_item(UniqueId::new(), "done.bin");
+        done.update_item_size(26, true);
+        done.report_bytes_completed(26);
+
+        let id = UniqueId::new();
+        let abandoned = group.new_item(id, "abandoned.bin");
+        abandoned.update_item_size(10, false);
+        abandoned.report_bytes_completed(5);
+        abandoned.update_transfer_size(8);
+        abandoned.report_transfer_bytes_completed(3);
+
+        group.remove_item(id);
+
+        let report = group.report();
+        assert_eq!((report.total_bytes_completed, report.total_bytes), (26, 26));
+        assert_eq!((report.total_transfer_bytes_completed, report.total_transfer_bytes), (0, 0));
+        assert!(group.item_report(id).is_none());
     }
 
     #[test]

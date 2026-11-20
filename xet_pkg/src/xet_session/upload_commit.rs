@@ -270,6 +270,10 @@ impl XetUploadCommitInner {
         let mut files = HashMap::with_capacity(stream_uploads.len());
 
         for stream in &stream_uploads {
+            if matches!(stream.status()?, XetTaskState::UserCancelled) {
+                stream.inner.abort_cleaner().await;
+                continue;
+            }
             match stream.try_finish() {
                 Some(meta) => {
                     files.insert(stream.task_id(), meta);
@@ -414,7 +418,8 @@ impl XetUploadCommit {
     /// Returns an [`XetStreamUpload`] for writing data in chunks.  Call
     /// [`write`](XetStreamUpload::write) to feed bytes, then
     /// [`finish`](XetStreamUpload::finish) to finalise ingestion.
-    /// **`finish` must be called before [`commit`](Self::commit).**
+    /// **`finish` must be called before [`commit`](Self::commit)**, unless the stream is
+    /// given up with [`abort`](XetStreamUpload::abort), which leaves it out of the commit.
     ///
     /// # Parameters
     ///
@@ -1189,6 +1194,104 @@ mod tests {
         assert!(matches!(err, XetError::UserCancelled(_)));
         let result = handle.finish().await;
         assert!(result.is_err());
+    }
+
+    /// Commit backed by a local CAS under `temp`.
+    async fn new_local_commit(temp: &tempfile::TempDir) -> XetUploadCommit {
+        let session = XetSessionBuilder::new()
+            .with_cache_dir(temp.path().join("cache"))
+            .build()
+            .unwrap();
+        session
+            .new_upload_commit()
+            .unwrap()
+            .with_endpoint(format!("local://{}", temp.path().join("cas").display()))
+            .build()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // Aborted streams, written to or not, are left out of the commit; finished uploads are kept.
+    async fn test_commit_succeeds_after_aborted_stream_retry() {
+        let temp = tempdir().unwrap();
+        let commit = new_local_commit(&temp).await;
+
+        let text1 = b"keep me";
+        let kept = commit.upload_bytes(text1.into(), Sha256Policy::Skip, None).await.unwrap();
+        commit.upload_stream(None, Sha256Policy::Skip).await.unwrap().abort();
+
+        let aborted = commit.upload_stream(None, Sha256Policy::Skip).await.unwrap();
+        aborted.write(&b"partial"[..]).await.unwrap();
+        aborted.abort();
+
+        let text2 = b"complete";
+        let retry = commit.upload_stream(None, Sha256Policy::Skip).await.unwrap();
+        retry.write(&text2[..]).await.unwrap();
+        retry.finish().await.unwrap();
+
+        let report = commit.commit().await.unwrap();
+        assert_eq!(report.uploads.len(), 2);
+        assert!(report.uploads.contains_key(&kept.task_id()));
+        assert!(report.uploads.contains_key(&retry.task_id()));
+        let expected_total = text1.len() as u64 + text2.len() as u64;
+        assert_eq!(
+            (report.progress.total_bytes_completed, report.progress.total_bytes),
+            (expected_total, expected_total)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    // A stream whose write failed is in the `Error` state; aborting it must still leave it out
+    // of the commit instead of blocking the commit forever.
+    async fn test_commit_succeeds_after_failed_stream_is_aborted() {
+        let temp = tempdir().unwrap();
+        let commit = new_local_commit(&temp).await;
+
+        let failed = commit.upload_stream(None, Sha256Policy::Skip).await.unwrap();
+        failed.write(&b"111"[..]).await.unwrap();
+        // Make the next write fail by hiding the cleaner, then restore it for commit to clean up.
+        let cleaner = failed.inner.cleaner.lock().await.take();
+        assert!(failed.write(&b"2222"[..]).await.is_err());
+        assert!(matches!(failed.status().unwrap(), XetTaskState::Error(_)));
+        *failed.inner.cleaner.lock().await = cleaner;
+        failed.abort();
+
+        let retry = commit.upload_stream(None, Sha256Policy::Skip).await.unwrap();
+        retry.write(&b"33333"[..]).await.unwrap();
+        retry.finish().await.unwrap();
+
+        let report = commit.commit().await.unwrap();
+        assert_eq!(report.uploads.len(), 1);
+        assert!(report.uploads.contains_key(&retry.task_id()));
+        assert_eq!((report.progress.total_bytes_completed, report.progress.total_bytes), (5, 5));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_stream_abort_does_not_interrupt_finish() {
+        let temp = tempdir().unwrap();
+        let commit = new_local_commit(&temp).await;
+        let stream = commit.upload_stream(None, Sha256Policy::Skip).await.unwrap();
+        stream.write(&b"keep this file"[..]).await.unwrap();
+
+        // Block finish after it enters `Finalizing` but before it takes the cleaner.
+        let guard = stream.inner.cleaner.lock().await;
+        let finishing = stream.clone();
+        let task = tokio::spawn(async move { finishing.finish().await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while stream.status().unwrap() != XetTaskState::Finalizing {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        stream.abort();
+        assert_eq!(stream.status().unwrap(), XetTaskState::Finalizing);
+        drop(guard);
+        let metadata = task.await.unwrap().unwrap();
+
+        let report = commit.commit().await.unwrap();
+        assert_eq!(report.uploads[&stream.task_id()].xet_info.hash, metadata.xet_info.hash);
     }
 
     // ── Multiple files ───────────────────────────────────────────────────────

@@ -15,7 +15,8 @@ use crate::{PyXetTaskState, convert_xet_error};
 /// - the context manager, which calls :meth:`finish` automatically on normal exit and :meth:`abort` on exception.
 ///
 /// **:meth:`finish` (or the context manager) must complete before**
-/// :meth:`XetUploadCommit.wait_to_finish` is called.
+/// :meth:`XetUploadCommit.wait_to_finish` is called, unless the stream was
+/// aborted: an aborted stream is left out of the commit.
 ///
 /// ```python
 /// with commit.start_upload_stream(name="big.bin") as stream:
@@ -113,6 +114,11 @@ impl PyXetStreamUpload {
     }
 
     /// Cancel the streaming upload.
+    ///
+    /// Works on a running stream or one whose :meth:`write` or :meth:`finish` failed;
+    /// once :meth:`finish` has started or succeeded, it does nothing. An aborted stream
+    /// is left out of :meth:`XetUploadCommit.wait_to_finish`, so a failed file can be
+    /// retried with a new stream in the same commit.
     pub fn abort(&self) {
         self.inner.abort();
     }

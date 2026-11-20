@@ -7,8 +7,8 @@ use std::io::Read;
 use std::mem::{swap, take};
 #[cfg(not(target_family = "wasm"))]
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as stdMutex};
 
 #[cfg(not(target_family = "wasm"))]
 use bytes::Bytes;
@@ -85,6 +85,11 @@ pub struct FileUploadSession {
 
     /// Set to true after finalize() has been called.
     finalized: AtomicBool,
+
+    /// First failure from registering or uploading a xorb, kept with its original type. Other files
+    /// in this session can dedup against a xorb as soon as it is registered, before its upload
+    /// finishes, so finalize returns this error even if the file that created the xorb was abandoned.
+    xorb_error: stdMutex<Option<DataError>>,
 
     /// Session start, for the telemetry `duration_ms` and `ingest_ms`.
     #[cfg(not(target_family = "wasm"))]
@@ -180,6 +185,7 @@ impl FileUploadSession {
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
             finalized: AtomicBool::new(false),
+            xorb_error: stdMutex::new(None),
             #[cfg(not(target_family = "wasm"))]
             started_at: std::time::Instant::now(),
         });
@@ -407,8 +413,31 @@ impl FileUploadSession {
 
     /// Registers a new xorb for upload, returning true if the xorb was added to the upload queue and false
     /// if it was already in the queue and didn't need to be uploaded again.
+    ///
+    /// The first failure, which may be another file's xorb upload collected here, is kept by the session
+    /// with its original type (see `xorb_error`); this caller then gets a descriptive copy.
     #[instrument(skip_all, name="FileUploadSession::register_new_xorb_for_upload", fields(xorb_len = xorb.num_bytes()))]
     pub(crate) async fn register_new_xorb(
+        self: &Arc<Self>,
+        xorb: RawXorbData,
+        file_dependencies: &[FileXorbDependency],
+    ) -> Result<bool> {
+        let err = match self.register_new_xorb_impl(xorb, file_dependencies).await {
+            Ok(is_new) => return Ok(is_new),
+            Err(e) => e,
+        };
+
+        // Only the first failure is kept; later ones go back to their caller unchanged.
+        let mut first = self.xorb_error.lock().unwrap();
+        if first.is_some() {
+            return Err(err);
+        }
+        let copy = DataError::InternalError(format!("xorb upload failed: {err}"));
+        *first = Some(err);
+        Err(copy)
+    }
+
+    async fn register_new_xorb_impl(
         self: &Arc<Self>,
         xorb: RawXorbData,
         file_dependencies: &[FileXorbDependency],
@@ -671,7 +700,12 @@ impl FileUploadSession {
         #[cfg(not(target_family = "wasm"))]
         let finalize_started = std::time::Instant::now();
 
-        let result = self.clone().finalize_inner(return_files).await;
+        // If finalize itself hit the first xorb failure, it got the untyped copy; return the typed original.
+        let result = self
+            .clone()
+            .finalize_inner(return_files)
+            .await
+            .map_err(|e| self.xorb_error.lock().unwrap().take().unwrap_or(e));
 
         #[cfg(not(target_family = "wasm"))]
         {
@@ -719,6 +753,12 @@ impl FileUploadSession {
 
         while let Some(result) = upload_tasks.join_next().await {
             result??;
+        }
+
+        // Return an earlier xorb failure that went unnoticed because the file that collected it was aborted.
+        let xorb_error = self.xorb_error.lock().unwrap().take();
+        if let Some(e) = xorb_error {
+            return Err(e);
         }
 
         let all_file_info = if return_files {
@@ -985,6 +1025,65 @@ mod tests {
                 // 4. Verify that the round-tripped file matches the original
                 let result_data = read(hydrated_path).unwrap();
                 assert_eq!(original_data.to_vec(), result_data);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_completion_tracker_complete_after_cleaner_abort() {
+        let temp = tempdir().unwrap();
+        let ctx = XetContext::default().unwrap();
+        let config = TranslatorConfig::local_config(&ctx, &temp.path().join("cas")).unwrap();
+
+        ctx.runtime
+            .bridge_sync(async move {
+                let upload_session = FileUploadSession::new(config.into()).await.unwrap();
+                let (_id, mut cleaner) = upload_session
+                    .start_clean(Some("aborted.bin".into()), None, Sha256Policy::Compute)
+                    .unwrap();
+                // Less than a chunk: all bytes are still buffered when we abort.
+                cleaner.add_data(b"unfinished").await.unwrap();
+                assert_eq!(upload_session.report().total_bytes, 10);
+
+                cleaner.abort().await;
+
+                // Finalize (which runs `assert_complete` in debug builds) succeeds without the file.
+                let (_, progress) = upload_session.finalize_with_report().await.unwrap();
+                assert_eq!((progress.total_bytes_completed, progress.total_bytes), (0, 0));
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_collected_xorb_failure_fails_finalize() {
+        let temp = tempdir().unwrap();
+        let ctx = XetContext::default().unwrap();
+        let config = TranslatorConfig::local_config(&ctx, &temp.path().join("cas")).unwrap();
+
+        ctx.runtime
+            .bridge_sync(async move {
+                let upload_session = FileUploadSession::new(config.into()).await.unwrap();
+                let (_id, mut cleaner) = upload_session
+                    .start_clean(Some("file.bin".into()), None, Sha256Policy::Skip)
+                    .unwrap();
+                cleaner.add_data(b"unfinished").await.unwrap();
+
+                // Stand-in for another file's xorb upload failing in the background.
+                let failed_upload = upload_session
+                    .xorb_upload_tasks
+                    .lock()
+                    .await
+                    .spawn(async { Err(DataError::HashNotFound) });
+                while !failed_upload.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+
+                // The detached finish cuts a xorb, so it collects the failure and fails.
+                assert!(cleaner.finish_with_chunks_detached().await.is_err());
+
+                // The collected failure was removed from the task set, but finalize still returns it.
+                let err = upload_session.finalize_with_report().await.unwrap_err();
+                assert!(matches!(err, DataError::HashNotFound));
             })
             .unwrap();
     }
