@@ -27,7 +27,7 @@ use crate::deduplication::DeduplicationMetrics;
 use crate::progress_tracking::GroupProgressReport;
 
 /// Bumped when keys are added. Query-side branching hangs off this; it is not a wire version.
-pub const TELEMETRY_SCHEMA_VERSION: u64 = 2;
+pub const TELEMETRY_SCHEMA_VERSION: u64 = 3;
 
 /// Divides, guaranteeing a finite `f64`.
 ///
@@ -299,7 +299,8 @@ impl UploadMetrics {
     }
 }
 
-/// Download documents: [`CommonMetrics`] plus how much the wire bytes expanded on disk.
+/// Download documents: [`CommonMetrics`] plus how much the wire bytes expanded on disk, and how
+/// resumed downloads went.
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadMetrics {
     #[serde(flatten)]
@@ -308,12 +309,17 @@ pub struct DownloadMetrics {
     /// Logical bytes produced per wire byte - dedup and compression combined, from the
     /// downloader's side.
     pub expansion_ratio: f64,
+
+    pub resumed_file_count: u64,
+    pub resume_fallback_count: u64,
 }
 
 impl DownloadMetrics {
-    pub fn new(common: CommonMetrics) -> Self {
+    pub fn new(common: CommonMetrics, progress: &GroupProgressReport) -> Self {
         Self {
             expansion_ratio: ratio(common.total_bytes_completed, common.transfer_bytes_completed),
+            resumed_file_count: progress.resumed_files,
+            resume_fallback_count: progress.resume_fallback_files,
             common,
         }
     }
@@ -394,6 +400,8 @@ mod tests {
         "os",
         "outcome",
         "peak_concurrency",
+        "resume_fallback_count",
+        "resumed_file_count",
         "schema_version",
         "seq",
         "terminal",
@@ -450,6 +458,8 @@ mod tests {
         ("os", Kind::Str),
         ("outcome", Kind::Str),
         ("peak_concurrency", Kind::U64),
+        ("resume_fallback_count", Kind::U64),
+        ("resumed_file_count", Kind::U64),
         ("schema_version", Kind::U64),
         ("seq", Kind::U64),
         ("shard_bytes_uploaded", Kind::U64),
@@ -543,6 +553,8 @@ mod tests {
             total_transfer_bytes: 500,
             total_transfer_bytes_completed: 400,
             total_transfer_bytes_completion_rate: Some(111.5),
+            resumed_files: 5,
+            resume_fallback_files: 2,
             shard: Some(crate::progress_tracking::ShardUploadProgressReport {
                 total_shard_bytes: 25,
                 total_shard_bytes_upload_completed: 25,
@@ -581,7 +593,7 @@ mod tests {
     fn download_json() -> Value {
         let mut c = common();
         c.direction = Direction::Download.as_str();
-        serde_json::to_value(DownloadMetrics::new(c)).unwrap()
+        serde_json::to_value(DownloadMetrics::new(c, &progress())).unwrap()
     }
 
     fn sorted_keys(v: &Value) -> Vec<String> {
@@ -767,5 +779,20 @@ mod tests {
         let doc = download_json();
         // 900 logical bytes produced from 400 wire bytes.
         assert_eq!(doc["expansion_ratio"], 2.25);
+    }
+
+    #[test]
+    fn test_resume_counts_come_from_progress() {
+        let doc = download_json();
+        assert_eq!(doc["resumed_file_count"], 5);
+        assert_eq!(doc["resume_fallback_count"], 2);
+    }
+
+    /// Resume keys are download-only.
+    #[test]
+    fn test_upload_has_no_resume_keys() {
+        let doc = upload_json();
+        assert!(doc.get("resumed_file_count").is_none());
+        assert!(doc.get("resume_fallback_count").is_none());
     }
 }

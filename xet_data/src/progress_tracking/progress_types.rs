@@ -70,6 +70,8 @@ pub struct GroupProgress {
     pub total_bytes_completed: AtomicU64,
     pub total_transfer_bytes: AtomicU64,
     pub total_transfer_bytes_completed: AtomicU64,
+    resumed_files: AtomicU64,
+    resume_fallback_files: AtomicU64,
     items: Mutex<HashMap<UniqueId, Arc<ItemProgress>>>,
     speed_tracker: Mutex<SpeedTracker>,
 }
@@ -87,6 +89,8 @@ impl GroupProgress {
             total_bytes_completed: AtomicU64::new(0),
             total_transfer_bytes: AtomicU64::new(0),
             total_transfer_bytes_completed: AtomicU64::new(0),
+            resumed_files: AtomicU64::new(0),
+            resume_fallback_files: AtomicU64::new(0),
             items: Mutex::new(HashMap::new()),
             speed_tracker: Mutex::new(SpeedTracker::new(half_life).with_min_observations(min_observations)),
         }
@@ -114,6 +118,14 @@ impl GroupProgress {
             .fetch_sub(item.bytes_completed.load(Ordering::Acquire), Ordering::Release);
         self.total_bytes
             .fetch_sub(item.total_bytes.load(Ordering::Acquire), Ordering::Release);
+    }
+
+    pub fn inc_resumed_files(&self) {
+        self.resumed_files.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_resume_fallback(&self) {
+        self.resume_fallback_files.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Snapshot of aggregate progress. Reads completions first (Acquire), then totals
@@ -145,6 +157,8 @@ impl GroupProgress {
             total_transfer_bytes,
             total_transfer_bytes_completed,
             total_transfer_bytes_completion_rate: transfer_rate,
+            resumed_files: self.resumed_files.load(Ordering::Relaxed),
+            resume_fallback_files: self.resume_fallback_files.load(Ordering::Relaxed),
             shard: None,
         }
     }
@@ -233,6 +247,8 @@ impl Default for GroupProgress {
             total_bytes_completed: AtomicU64::new(0),
             total_transfer_bytes: AtomicU64::new(0),
             total_transfer_bytes_completed: AtomicU64::new(0),
+            resumed_files: AtomicU64::new(0),
+            resume_fallback_files: AtomicU64::new(0),
             items: Mutex::new(HashMap::new()),
             speed_tracker: Mutex::new(
                 SpeedTracker::new(DEFAULT_SPEED_HALF_LIFE).with_min_observations(DEFAULT_MIN_OBSERVATIONS_FOR_RATE),
@@ -248,6 +264,8 @@ impl std::fmt::Debug for GroupProgress {
             .field("total_bytes_completed", &self.total_bytes_completed.load(Ordering::Relaxed))
             .field("total_transfer_bytes", &self.total_transfer_bytes.load(Ordering::Relaxed))
             .field("total_transfer_bytes_completed", &self.total_transfer_bytes_completed.load(Ordering::Relaxed))
+            .field("resumed_files", &self.resumed_files.load(Ordering::Relaxed))
+            .field("resume_fallback_files", &self.resume_fallback_files.load(Ordering::Relaxed))
             .finish()
     }
 }
@@ -650,6 +668,8 @@ pub struct GroupProgressReport {
     pub total_transfer_bytes: u64,
     pub total_transfer_bytes_completed: u64,
     pub total_transfer_bytes_completion_rate: Option<f64>,
+    pub resumed_files: u64,
+    pub resume_fallback_files: u64,
     /// Shard finalization progress when an upload commit is tracking shards.
     ///
     /// `None` for downloads, dry-run, or older callers that predate the shard
@@ -742,6 +762,25 @@ mod tests {
         assert_eq!(report.total_bytes, 100);
         assert_eq!(report.total_bytes_completed, 100);
         assert!(group.all_items_complete());
+    }
+
+    /// Resume counts are group-level, so they survive the fallback's `remove_item`.
+    #[test]
+    fn test_resume_counts_in_report() {
+        let group = Arc::new(GroupProgress::new());
+        assert_eq!(group.report().resumed_files, 0);
+        assert_eq!(group.report().resume_fallback_files, 0);
+
+        let id = UniqueId::new();
+        group.new_item(id, "a.bin");
+        group.inc_resumed_files();
+        group.inc_resume_fallback();
+        group.remove_item(id);
+        group.inc_resumed_files();
+
+        let report = group.report();
+        assert_eq!(report.resumed_files, 2);
+        assert_eq!(report.resume_fallback_files, 1);
     }
 
     #[test]
