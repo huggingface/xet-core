@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as tokio;
 use tracing::{Instrument, debug_span, info, instrument};
@@ -81,7 +81,7 @@ pub struct SingleFileCleaner {
     provided_sha256: Option<Sha256>,
 
     // Start time
-    start_time: DateTime<Utc>,
+    start_time: Timestamp,
 }
 
 impl SingleFileCleaner {
@@ -109,7 +109,7 @@ impl SingleFileCleaner {
             chunker: crate::deduplication::Chunker::default(),
             sha_generator,
             provided_sha256,
-            start_time: Utc::now(),
+            start_time: Timestamp::now(),
         }
     }
 
@@ -294,8 +294,8 @@ impl SingleFileCleaner {
             file_name = self.file_name.as_deref().unwrap_or_default().to_string(),
             file_size_count = deduplication_metrics.total_bytes,
             new_bytes_count = deduplication_metrics.new_bytes,
-            start_ts = self.start_time.to_rfc3339(),
-            end_processing_ts = Utc::now().to_rfc3339(),
+            start_ts = %self.start_time,
+            end_processing_ts = %Timestamp::now(),
         );
 
         Ok((file_info, chunk_hashes, mdb_file_info, deduplication_metrics))

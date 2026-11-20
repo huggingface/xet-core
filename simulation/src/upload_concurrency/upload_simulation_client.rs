@@ -158,7 +158,7 @@ fn spawn_stats_reporter(
             let metrics = ClientMetrics {
                 client_id,
                 server_tag: "upload-server".to_string(),
-                timestamp: chrono::Utc::now().timestamp_millis().to_string(),
+                timestamp: jiff::Timestamp::now().as_millisecond().to_string(),
                 elapsed_seconds: elapsed_sec,
                 interval_bytes,
                 total_bytes: current_bytes,

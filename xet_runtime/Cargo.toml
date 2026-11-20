@@ -15,11 +15,10 @@ name = "xet_runtime"
 path = "src/lib.rs"
 
 [dependencies]
-chrono = { workspace = true }
 colored = { workspace = true }
 const-str = { workspace = true }
 dirs = { workspace = true }
-humantime = { workspace = true }
+jiff = { workspace = true }
 konst = { workspace = true }
 libc = { workspace = true }
 pastey = { workspace = true }
@@ -48,6 +47,8 @@ winapi = { workspace = true }
 whoami = { workspace = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+# The current time comes from the JS host on wasm32-unknown-unknown.
+jiff = { workspace = true, features = ["js"] }
 tokio = { workspace = true, features = [
     "sync",
     "macros",
@@ -58,6 +59,8 @@ tokio = { workspace = true, features = [
 tokio_with_wasm = { workspace = true, features = ["rt", "sync", "time"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+# Local-time log file names need the system time zone.
+jiff = { workspace = true, features = ["default"] }
 shellexpand = { workspace = true, features = ["path"] }
 sysinfo = { workspace = true }
 tracing-appender = { workspace = true }

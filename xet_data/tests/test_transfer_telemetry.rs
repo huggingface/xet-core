@@ -125,7 +125,11 @@ fn assert_envelope(doc: &Value, expected_event: &str) {
     assert_eq!(doc["event"], expected_event);
     assert!(doc["session_id"].as_str().is_some_and(|s| !s.is_empty()));
     assert!(doc["user_agent"].as_str().is_some_and(|s| !s.is_empty()));
-    chrono::DateTime::parse_from_rfc3339(doc["time"].as_str().unwrap()).expect("time must be RFC3339");
+    doc["time"]
+        .as_str()
+        .unwrap()
+        .parse::<jiff::Timestamp>()
+        .expect("time must be RFC3339");
 
     // The camelCase spelling is only a server-side alias for older clients, and a body carrying
     // both is rejected as a duplicate field.

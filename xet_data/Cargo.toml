@@ -23,11 +23,11 @@ xet-client = { version = "1.8.1", path = "../xet_client", default-features = fal
 anyhow = { workspace = true, optional = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
-chrono = { workspace = true }
 clap = { workspace = true, optional = true }
 gearhash = { workspace = true }
 http = { workspace = true }
 itertools = { workspace = true }
+jiff = { workspace = true }
 more-asserts = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
@@ -41,6 +41,8 @@ uuid = { workspace = true, features = ["v7"] }
 pyo3 = { workspace = true, optional = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
+# The current time comes from the JS host on wasm32-unknown-unknown.
+jiff = { workspace = true, features = ["js"] }
 tokio = { workspace = true, features = [
     "sync",
     "macros",

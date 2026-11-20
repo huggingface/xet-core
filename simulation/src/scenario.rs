@@ -217,7 +217,7 @@ async fn sample_network_stats(
     profile_name: &Option<String>,
 ) -> NetworkStats {
     NetworkStats {
-        timestamp: chrono::Utc::now().timestamp_millis().to_string(),
+        timestamp: jiff::Timestamp::now().as_millisecond().to_string(),
         latency_ms: server.current_latency_ms().await,
         bandwidth_bytes_per_sec: server.current_bandwidth().await,
         congestion_mode: None,
