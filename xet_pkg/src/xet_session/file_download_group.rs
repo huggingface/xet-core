@@ -216,7 +216,39 @@ impl XetFileDownloadGroup {
         let task_runtime = self.task_runtime.clone();
         self.task_runtime
             .bridge_async("download_file_to_path", async move {
-                inner.start_download_file_to_path(file_info, dest_path, &task_runtime).await
+                inner
+                    .start_download_file_to_path(file_info, dest_path, false, &task_runtime)
+                    .await
+            })
+            .await
+    }
+
+    /// Like [`download_file_to_path`](Self::download_file_to_path), but reuses the bytes already
+    /// present at `dest_path` instead of truncating it.
+    ///
+    /// Each file segment lying entirely within the existing file is re-chunked and checked
+    /// against the segment's verification hash. Matching segments are kept; only the missing
+    /// or mismatching byte ranges are downloaded. A missing or empty file is downloaded fully.
+    /// While the existing file is being checked, progress is reported through the
+    /// `resume_check_bytes` / `resume_check_bytes_completed` fields of the item report.
+    pub async fn download_file_to_path_reusing_existing(
+        &self,
+        file_info: XetFileInfo,
+        dest_path: PathBuf,
+    ) -> Result<XetFileDownload, XetError> {
+        info!(
+            group_id = %self.id(),
+            dest_path = ?dest_path,
+            hash = %file_info.hash,
+            "Download file to path, reusing existing data"
+        );
+        let inner = self.inner.clone();
+        let task_runtime = self.task_runtime.clone();
+        self.task_runtime
+            .bridge_async("download_file_to_path_reusing_existing", async move {
+                inner
+                    .start_download_file_to_path(file_info, dest_path, true, &task_runtime)
+                    .await
             })
             .await
     }
@@ -298,8 +330,38 @@ impl XetFileDownloadGroup {
         let inner = self.inner.clone();
         let task_runtime = self.task_runtime.clone();
         self.task_runtime.bridge_sync("download_file_to_path_blocking", async move {
-            inner.start_download_file_to_path(file_info, dest_path, &task_runtime).await
+            inner
+                .start_download_file_to_path(file_info, dest_path, false, &task_runtime)
+                .await
         })
+    }
+
+    /// Blocking version of
+    /// [`download_file_to_path_reusing_existing`](Self::download_file_to_path_reusing_existing).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`XetError::WrongRuntimeMode`] if the session was created with an external
+    /// tokio runtime.
+    pub fn download_file_to_path_reusing_existing_blocking(
+        &self,
+        file_info: XetFileInfo,
+        dest_path: PathBuf,
+    ) -> Result<XetFileDownload, XetError> {
+        info!(
+            group_id = %self.id(),
+            dest_path = ?dest_path,
+            hash = %file_info.hash,
+            "Download file to path, reusing existing data"
+        );
+        let inner = self.inner.clone();
+        let task_runtime = self.task_runtime.clone();
+        self.task_runtime
+            .bridge_sync("download_file_to_path_reusing_existing_blocking", async move {
+                inner
+                    .start_download_file_to_path(file_info, dest_path, true, &task_runtime)
+                    .await
+            })
     }
 
     /// Blocking version of [`finish`](Self::finish).
@@ -351,12 +413,13 @@ impl XetFileDownloadGroupInner {
         self: &Arc<Self>,
         file_info: XetFileInfo,
         dest_path: PathBuf,
+        reuse_existing: bool,
         parent_task_runtime: &Arc<TaskRuntime>,
     ) -> Result<XetFileDownload, XetError> {
         let absolute_path = std::path::absolute(dest_path)?;
         let (task_id, join_handle) = self
             .download_session
-            .download_file_background(file_info.clone(), absolute_path.clone())
+            .download_file_background(file_info.clone(), absolute_path.clone(), reuse_existing)
             .await?;
 
         let task_runtime = parent_task_runtime.child()?;
