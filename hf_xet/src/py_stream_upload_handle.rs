@@ -49,7 +49,7 @@ impl PyXetStreamUpload {
     }
 
     /// Calls :meth:`finish` on normal exit (idempotent if already finished) or :meth:`abort` on
-    /// exception; never suppresses the exception.
+    /// exception, including when that :meth:`finish` fails; never suppresses the exception.
     fn __exit__(
         &self,
         py: Python<'_>,
@@ -60,8 +60,12 @@ impl PyXetStreamUpload {
         if exc_type.is_none() {
             // Normal exit: finalise the stream only if not already done (idempotent — avoids a
             // double-finish error when the caller explicitly called finish() inside the with-block).
-            if self.inner.try_finish().is_none() {
-                self.finish(py)?;
+            if self.inner.try_finish().is_none()
+                && let Err(e) = self.finish(py)
+            {
+                // A failed finish is an exception too: abort so the commit leaves the stream out.
+                self.inner.abort();
+                return Err(e);
             }
         } else {
             // Exception path: cancel the upload (infallible).
