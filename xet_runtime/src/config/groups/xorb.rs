@@ -1,6 +1,6 @@
 use crate::utils::{ByteSize, ConfigEnum};
 
-crate::config_group!({
+crate::config::macros::xet_config_group!(xorb, {
     /// How often should we retest the compression scheme?
     /// Determining the optimal compression scheme takes time, but
     /// it also minimizes the storage costs of the data.

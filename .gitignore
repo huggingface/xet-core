@@ -29,3 +29,6 @@ venv
 
 # Doxygen-generated API docs for xet_capi
 xet_capi/docs/
+
+# Nix build artifact
+result

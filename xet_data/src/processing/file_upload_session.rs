@@ -21,7 +21,8 @@ use tokio_with_wasm::alias as tokio;
 use tracing::Span;
 use tracing::{Instrument, info_span, instrument};
 use xet_client::cas_client::{Client, ProgressCallback};
-use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
+use xet_core_structures::merklehash::MerkleHash;
+use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, MDBFileInfo};
 use xet_core_structures::xorb_object::SerializedXorbObject;
 use xet_runtime::core::XetContext;
 use xet_runtime::utils::UniqueId;
@@ -37,6 +38,27 @@ use crate::error::{DataError, Result};
 use crate::progress_tracking::upload_tracking::{CompletionTracker, FileXorbDependency};
 use crate::progress_tracking::{GroupProgressReport, ItemProgressReport, UploadGroupProgress};
 
+/// Whether successful writes through the supplied client establish remote shard availability.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum UploadShardCachePolicy {
+    /// Writes reach the remote CAS: export uploaded shards to the shared shard cache, and record uploaded xorbs so
+    /// later sessions for the same endpoint can resume against them.
+    #[default]
+    Populate,
+    /// Writes don't establish remote availability, for example with a local staging client: leave both the shared
+    /// shard cache and the xorb resume records untouched.
+    Skip,
+}
+
+/// Additional deduplication source whose xorb dependencies are already persisted.
+/// Matches require no transfer by this upload session. The caller owns their lifetime
+/// and any later transfer to a remote service.
+#[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
+pub trait DeduplicationSource: Send + Sync {
+    async fn query(&self, hashes: &[MerkleHash]) -> Result<Option<(usize, FileDataSequenceEntry)>>;
+}
+
 /// Manages the translation of files between the
 /// MerkleDB / pointer file format and the materialized version.
 ///
@@ -47,6 +69,7 @@ pub struct FileUploadSession {
     pub(crate) ctx: XetContext,
     pub(crate) client: Arc<dyn Client>,
     pub(crate) shard_interface: SessionShardInterface,
+    pub(crate) dedup_source: Option<Arc<dyn DeduplicationSource>>,
 
     /// Tracking upload completion between xorbs and files.
     pub(crate) completion_tracker: Arc<CompletionTracker>,
@@ -95,17 +118,62 @@ impl FileUploadSession {
 
         let client = create_remote_client(&config, &session_id, dry_run).await?;
 
+        Self::with_client(
+            config,
+            client,
+            dry_run,
+            completion_tracker,
+            None,
+            #[cfg(not(target_family = "wasm"))]
+            UploadShardCachePolicy::Populate,
+        )
+        .await
+    }
+
+    /// Creates a session with a custom transfer client and optional additional dedup source.
+    /// Use `Skip` when successful client writes do not establish remote availability.
+    #[cfg(not(target_family = "wasm"))]
+    pub async fn new_with_client(
+        config: Arc<TranslatorConfig>,
+        client: Arc<dyn Client>,
+        dedup_source: Option<Arc<dyn DeduplicationSource>>,
+        cache_policy: UploadShardCachePolicy,
+    ) -> Result<Arc<Self>> {
+        let progress = UploadGroupProgress::with_speed_config(
+            config.ctx.config.data.progress_update_speed_sampling_window,
+            config.ctx.config.data.progress_update_speed_min_observations,
+        );
+        Self::with_client(config, client, false, Arc::new(CompletionTracker::new(progress)), dedup_source, cache_policy)
+            .await
+    }
+
+    async fn with_client(
+        config: Arc<TranslatorConfig>,
+        client: Arc<dyn Client>,
+        dry_run: bool,
+        completion_tracker: Arc<CompletionTracker>,
+        dedup_source: Option<Arc<dyn DeduplicationSource>>,
+        #[cfg(not(target_family = "wasm"))] cache_policy: UploadShardCachePolicy,
+    ) -> Result<Arc<Self>> {
+        let ctx = config.ctx.clone();
         #[cfg(target_family = "wasm")]
         let shard_interface = SessionShardInterface::new(&ctx, config.clone(), client.clone(), dry_run).await?;
 
         #[cfg(not(target_family = "wasm"))]
-        let shard_interface =
-            SessionShardInterface::new(&ctx, config.clone(), client.clone(), completion_tracker.clone(), dry_run)
-                .await?;
+        let shard_interface = SessionShardInterface::new(
+            &ctx,
+            config.clone(),
+            client.clone(),
+            completion_tracker.clone(),
+            dry_run,
+            cache_policy,
+        )
+        .await?;
 
         let session = Arc::new(Self {
             ctx,
             shard_interface,
+            dedup_source,
             client,
             completion_tracker,
             current_session_data: Mutex::new(DataAggregator::default()),
@@ -950,5 +1018,78 @@ mod tests {
                 assert!(file_infos[0].metadata_ext.is_none(), "Skip should produce no metadata_ext");
             })
             .unwrap();
+    }
+
+    /// Dedup source backed by an in-memory shard, standing in for xorbs persisted outside the session.
+    struct InMemoryDeduplicationSource(xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard);
+
+    #[async_trait::async_trait]
+    impl DeduplicationSource for InMemoryDeduplicationSource {
+        async fn query(&self, hashes: &[MerkleHash]) -> Result<Option<(usize, FileDataSequenceEntry)>> {
+            Ok(self.0.chunk_hash_dedup_query(hashes))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_dedup_source_matches_are_not_uploaded() -> Result<()> {
+        use rand::prelude::*;
+        use xet_client::cas_client::MemoryClient;
+        use xet_core_structures::metadata_shard::xorb_structs::{
+            MDBXorbInfo, XorbChunkSequenceEntry, XorbChunkSequenceHeader,
+        };
+
+        use crate::deduplication::Chunker;
+
+        let mut data = vec![0u8; 512 * 1024];
+        StdRng::seed_from_u64(7).fill_bytes(&mut data);
+
+        // Describe the whole file as one xorb that exists only in the dedup source.
+        let source_xorb_hash = MerkleHash::from([9, 9, 9, 9]);
+        let mut chunk_entries = Vec::new();
+        let mut offset = 0;
+        for chunk in Chunker::default().next_block(&data, true) {
+            chunk_entries.push(XorbChunkSequenceEntry::new(chunk.hash, chunk.data.len(), offset));
+            offset += chunk.data.len();
+        }
+        let mut source_shard = xet_core_structures::metadata_shard::shard_in_memory::MDBInMemoryShard::default();
+        source_shard.add_xorb_block(Arc::new(MDBXorbInfo {
+            metadata: XorbChunkSequenceHeader::new(source_xorb_hash, chunk_entries.len(), data.len()),
+            chunks: chunk_entries,
+        }))?;
+
+        let ctx = XetContext::from_external(tokio::runtime::Handle::current(), xet_runtime::config::XetConfig::new());
+        let dir = tempfile::tempdir()?;
+        let session = FileUploadSession::new_with_client(
+            Arc::new(TranslatorConfig::memory_config(&ctx, dir.path())?),
+            MemoryClient::new(ctx.clone()),
+            Some(Arc::new(InMemoryDeduplicationSource(source_shard))),
+            UploadShardCachePolicy::Skip,
+        )
+        .await?;
+
+        let (_id, mut cleaner) =
+            session.start_clean(Some("test".into()), Some(data.len() as u64), Sha256Policy::Skip)?;
+        cleaner.add_data(&data).await?;
+        cleaner.finish().await?;
+
+        let progress = session.clone();
+        let (metrics, file_infos) = session.finalize_with_file_info().await?;
+
+        // Every byte is deduped against the source, so no xorb is uploaded.
+        assert_eq!(metrics.deduped_bytes, data.len() as u64);
+        assert_eq!(metrics.new_bytes, 0);
+        assert_eq!(metrics.xorb_bytes_uploaded, 0);
+
+        // The file is reconstructed from the source's xorb.
+        assert_eq!(file_infos.len(), 1);
+        let segments = &file_infos[0].segments;
+        assert!(!segments.is_empty());
+        assert!(segments.iter().all(|segment| segment.xorb_hash == source_xorb_hash));
+
+        // Progress completes without waiting for an upload of that xorb.
+        let report = progress.report();
+        assert_eq!(report.total_bytes, data.len() as u64);
+        assert_eq!(report.total_bytes_completed, data.len() as u64);
+        Ok(())
     }
 }

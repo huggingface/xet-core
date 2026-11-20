@@ -27,6 +27,13 @@ should not inherit implicitly.
 `russh`, and `tokio` dependencies are optional; normal builds do not enable this
 feature.
 
+`TempHome::new()` isolates Git environment overrides and disables system config
+before any setup commands run. Explicit `git config --system` commands write
+`system.gitconfig` inside the temporary home, never the host's system config. `TestRepo` inherits this behavior. The original
+environment is restored when the last fixture clone is dropped; tests using these
+fixtures must use `#[serial(env_var_write_read)]`. Set intentional Git environment
+overrides after constructing the fixture.
+
 Run from the repository root:
 
 ```sh

@@ -7,7 +7,7 @@ mod git_repo;
 mod git_url;
 mod utils;
 
-pub use auth::{GitCredentialHelper, SSHCredentialHelper};
+pub use auth::{GitCredentialHelper, Interaction, SSHCredentialHelper};
 pub use errors::{GitExtensionError, Result};
 pub use git_repo::GitRepo;
 pub use git_url::{GitUrl, Scheme};

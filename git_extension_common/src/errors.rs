@@ -6,7 +6,7 @@ use xet_client::ClientError;
 
 #[derive(Error, Debug)]
 pub enum GitExtensionError {
-    #[error("Command failed: {reason}, {source:?}")]
+    #[error("Command failed: {reason}{}", .source.as_ref().map(|e| format!(", {e}")).unwrap_or_default())]
     CommandFailed {
         reason: String,
         source: Option<std::io::Error>,
@@ -57,5 +57,20 @@ impl GitExtensionError {
 
     pub(crate) fn internal(e: impl Display) -> GitExtensionError {
         GitExtensionError::Internal(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GitExtensionError;
+
+    #[test]
+    fn command_failed_shows_source_only_when_present() {
+        assert_eq!(GitExtensionError::cmd_failed("git exited", None).to_string(), "Command failed: git exited");
+        let source = std::io::Error::other("pipe closed");
+        assert_eq!(
+            GitExtensionError::cmd_failed("git exited", Some(source)).to_string(),
+            "Command failed: git exited, pipe closed"
+        );
     }
 }

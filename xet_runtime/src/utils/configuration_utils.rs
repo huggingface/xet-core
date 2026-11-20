@@ -59,7 +59,7 @@ pub trait ParsableConfigValue: std::fmt::Debug + Sized {
 }
 
 /// Most values work with the FromStr implementation, but we want to override the behavior for some types
-/// (e.g. Option<T> and bool) to have custom parsing behavior.
+/// (e.g. `Option<T>` and `bool`) to have custom parsing behavior.
 pub trait FromStrParseable: FromStr + std::fmt::Debug + std::fmt::Display {}
 
 impl<T: FromStrParseable> ParsableConfigValue for T {
@@ -86,7 +86,23 @@ impl FromStrParseable for i64 {}
 impl FromStrParseable for f32 {}
 impl FromStrParseable for f64 {}
 impl FromStrParseable for String {}
-impl FromStrParseable for ByteSize {}
+
+/// `ByteSize` displays in rounded SI units (e.g. `1.235MB`), so `to_config_string` falls back to the exact
+/// byte count whenever the displayed form would not parse back to the same value.
+impl ParsableConfigValue for ByteSize {
+    fn parse_user_value(value: &str) -> Option<Self> {
+        value.parse::<ByteSize>().ok()
+    }
+
+    fn to_config_string(&self) -> String {
+        let display = self.to_string();
+        if display.parse::<ByteSize>().is_ok_and(|parsed| parsed == *self) {
+            display
+        } else {
+            self.as_u64().to_string()
+        }
+    }
+}
 
 /// Special handling for bool:
 /// - true: "1","true","yes","y","on"  -> true
@@ -111,7 +127,7 @@ impl ParsableConfigValue for bool {
     }
 }
 
-/// Enable Option<T> to allow the default value to be None if nothing is set and appear as
+/// Enable `Option<T>` to allow the default value to be None if nothing is set and appear as
 /// Some(Value) if the user specifies the value.
 impl<T: ParsableConfigValue> ParsableConfigValue for Option<T> {
     fn parse_user_value(value: &str) -> Option<Self> {
@@ -191,9 +207,12 @@ macro_rules! test_configurable_constants {
     };
 }
 
+// Used only by the expansions of `test_set_constants!` and `test_set_config!`.
+#[cfg(feature = "test-utils")]
+#[doc(hidden)]
 pub use ctor as ctor_reexport;
 
-#[cfg(not(doctest))]
+#[cfg(all(feature = "test-utils", not(doctest)))]
 /// A macro for **tests** that sets `HF_XET_<CONSTANT_NAME>` to `$value` **before**
 /// the constant is initialized, and then checks that the constant actually picks up
 /// that value. If the constant was already accessed (thus initialized), or if it
@@ -224,9 +243,12 @@ macro_rules! test_set_constants {
     ($(
         $var_name:ident = $val:expr;
     )+) => {
-        use $crate::configuration_utils::ctor_reexport as ctor;
-
-        #[ctor::ctor(unsafe)]
+        // `#[ctor]` expands to `::ctor::...` by default, which would require every caller to depend on `ctor`.
+        // `crate_path` points it at xet_runtime's re-export, so enabling `xet-runtime/test-utils` is enough.
+        #[$crate::configuration_utils::ctor_reexport::ctor(
+            unsafe,
+            crate_path = $crate::configuration_utils::ctor_reexport
+        )]
         fn set_constants_on_load() {
             $(
                 let val = $val;
@@ -259,7 +281,7 @@ macro_rules! test_set_constants {
     }
 }
 
-#[cfg(not(doctest))]
+#[cfg(all(feature = "test-utils", not(doctest)))]
 /// A macro for **tests** that sets config group environment variables **before**
 /// XetContext is initialized. The environment variables follow the pattern
 /// `HF_XET_{GROUP_NAME}_{FIELD_NAME}`.
@@ -295,9 +317,12 @@ macro_rules! test_set_config {
             )+
         }
     )+) => {
-        use $crate::configuration_utils::ctor_reexport as config_ctor;
-
-        #[config_ctor::ctor(unsafe)]
+        // `#[ctor]` expands to `::ctor::...` by default, which would require every caller to depend on `ctor`.
+        // `crate_path` points it at xet_runtime's re-export, so enabling `xet-runtime/test-utils` is enough.
+        #[$crate::configuration_utils::ctor_reexport::ctor(
+            unsafe,
+            crate_path = $crate::configuration_utils::ctor_reexport
+        )]
         fn set_config_on_load() {
             $(
                 let group_name_upper = stringify!($group_name).to_uppercase();
@@ -436,7 +461,11 @@ mod tests {
             ByteSize::new(1000),
             ByteSize::new(1_000_000),
             ByteSize::new(8_000_000),
-            ByteSize::new(10_000_000_000)
+            ByteSize::new(10_000_000_000),
+            ByteSize::new(1_234_567),
+            ByteSize::new(1_000_000_001),
+            ByteSize::new(999_999),
+            ByteSize::new(u32::MAX as u64)
         );
     }
 
