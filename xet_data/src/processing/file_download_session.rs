@@ -18,6 +18,7 @@ use xet_runtime::utils::UniqueId;
 
 use super::XetFileInfo;
 use super::configurations::TranslatorConfig;
+#[cfg(not(target_family = "wasm"))]
 use super::data_client::hash_single_file;
 use super::remote_client_interface::create_remote_client;
 use crate::error::{DataError, Result};
