@@ -1,9 +1,8 @@
-use std::future::{self, Future};
-use std::pin::Pin;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use tokio::task::JoinHandle;
 #[cfg(target_family = "wasm")]
 use tokio_with_wasm::alias as tokio;
 use tracing::{Instrument, debug_span, info, instrument};
@@ -70,9 +69,8 @@ pub struct SingleFileCleaner {
     // The chunker.
     chunker: Chunker,
 
-    // The deduplication interface.  Use a future that always returns the dedup manager
-    // on await so that we can background this part.
-    dedup_manager_fut: Pin<Box<dyn Future<Output = Result<FileDeduper<UploadSessionDataManager>>> + Send + 'static>>,
+    // The deduplication interface; batches run in the background.
+    dedup_state: DedupState,
 
     // SHA-256 generator, present only when computing from file data.
     sha_generator: Option<Sha256Generator>,
@@ -82,6 +80,17 @@ pub struct SingleFileCleaner {
 
     // Start time
     start_time: DateTime<Utc>,
+}
+
+/// Where the file's deduper is between operations. Starting `Idle` keeps construction free of
+/// `tokio::spawn`, so a cleaner can be created outside a Tokio runtime.
+enum DedupState {
+    /// No batch is running; the deduper is ready for the next one.
+    Idle(Box<FileDeduper<UploadSessionDataManager>>),
+    /// A background task is processing a batch and hands the deduper back when done.
+    Running(JoinHandle<Result<FileDeduper<UploadSessionDataManager>>>),
+    /// The deduper is gone: a batch failed, or the current operation took it.
+    Empty,
 }
 
 impl SingleFileCleaner {
@@ -104,7 +113,7 @@ impl SingleFileCleaner {
             ctx,
             file_name,
             file_id,
-            dedup_manager_fut: Box::pin(async move { Ok(deduper) }),
+            dedup_state: DedupState::Idle(Box::new(deduper)),
             session,
             chunker: crate::deduplication::Chunker::default(),
             sha_generator,
@@ -117,8 +126,7 @@ impl SingleFileCleaner {
     /// waiting for background operations to complete, then triggering a
     /// new background task.
     async fn deduper_process_chunks(&mut self, chunks: Arc<[Chunk]>) -> Result<()> {
-        // Handle the move out by replacing it with a dummy future discarded below.
-        let mut deduper = std::mem::replace(&mut self.dedup_manager_fut, Box::pin(future::pending())).await?;
+        let mut deduper = self.join_deduper().await?;
 
         let num_chunks = chunks.len();
 
@@ -130,9 +138,24 @@ impl SingleFileCleaner {
             .instrument(debug_span!("deduper::process_chunks_task", num_chunks).or_current()),
         );
 
-        self.dedup_manager_fut = Box::pin(async move { dedup_background.await? });
+        self.dedup_state = DedupState::Running(dedup_background);
 
         Ok(())
+    }
+
+    /// Takes the deduper, first waiting for its running batch. The handle is awaited in place,
+    /// so if the caller is cancelled mid-wait (e.g. a cancelled write), `abort` can still join it.
+    async fn join_deduper(&mut self) -> Result<FileDeduper<UploadSessionDataManager>> {
+        if let DedupState::Running(handle) = &mut self.dedup_state {
+            let result = handle.await;
+            self.dedup_state = DedupState::Empty;
+            return result?;
+        }
+
+        match std::mem::replace(&mut self.dedup_state, DedupState::Empty) {
+            DedupState::Idle(deduper) => Ok(*deduper),
+            _ => Err(DataError::InternalError("deduplication task already failed".to_string())),
+        }
     }
 
     pub async fn add_data(&mut self, data: &[u8]) -> Result<()> {
@@ -215,8 +238,8 @@ impl SingleFileCleaner {
     /// `MerkleHashSubtree` nodes for newly-uploaded windows; regular uploads should call
     /// [`finish`] instead.
     #[instrument(skip_all, name = "FileCleaner::finish_with_chunks", fields(file_name=self.file_name.as_ref().map(|s|s.to_string())))]
-    pub async fn finish_with_chunks(self) -> Result<(XetFileInfo, ChunkHashList, DeduplicationMetrics)> {
-        let (file_info, chunk_hashes, _, deduplication_metrics) = Self::finish_inner(self, true).await?;
+    pub async fn finish_with_chunks(mut self) -> Result<(XetFileInfo, ChunkHashList, DeduplicationMetrics)> {
+        let (file_info, chunk_hashes, _, deduplication_metrics) = self.finish_inner(true).await?;
         Ok((file_info, chunk_hashes, deduplication_metrics))
     }
 
@@ -224,13 +247,38 @@ impl SingleFileCleaner {
     /// session shard. Returns the MDBFileInfo directly so the caller can compose it into a
     /// larger file without creating orphan shard entries.
     pub async fn finish_with_chunks_detached(
-        self,
+        mut self,
     ) -> Result<(XetFileInfo, ChunkHashList, MDBFileInfo, DeduplicationMetrics)> {
-        Self::finish_inner(self, false).await
+        self.finish_inner(false).await
     }
 
+    /// Like [`finish`](Self::finish), but if finishing fails the file is given up as in
+    /// [`abort`](Self::abort), so a caller that may leave the file out of the session does not
+    /// leave it in progress tracking.
+    pub async fn finish_or_abort(mut self) -> Result<(XetFileInfo, DeduplicationMetrics)> {
+        match self.finish_inner(true).await {
+            Ok((file_info, _, _, deduplication_metrics)) => Ok((file_info, deduplication_metrics)),
+            Err(e) => {
+                self.abort().await;
+                Err(e)
+            },
+        }
+    }
+
+    /// Gives up on this file: waits for in-flight deduplication, then drops the file from progress
+    /// tracking. The task is joined, not aborted, because cancelling it mid-registration could
+    /// leave the shard referencing a xorb that is never uploaded.
+    pub async fn abort(mut self) {
+        // The file is being discarded, so a dedup failure here has nothing to report to.
+        let _ = self.join_deduper().await;
+
+        self.session.completion_tracker.abort_file(self.file_id);
+    }
+
+    /// The finish steps. Borrows the cleaner so [`finish_or_abort`](Self::finish_or_abort) can still
+    /// give it up when they fail.
     async fn finish_inner(
-        mut self,
+        &mut self,
         register: bool,
     ) -> Result<(XetFileInfo, ChunkHashList, MDBFileInfo, DeduplicationMetrics)> {
         if let Some(chunk) = self.chunker.finish() {
@@ -246,7 +294,7 @@ impl SingleFileCleaner {
         let metadata_ext = sha256.map(FileMetadataExt::new);
 
         let (file_hash, chunk_hashes, remaining_file_data, deduplication_metrics) =
-            self.dedup_manager_fut.await?.finalize(metadata_ext);
+            self.join_deduper().await?.finalize(metadata_ext);
 
         let file_info = XetFileInfo {
             hash: file_hash.hex(),
@@ -299,5 +347,33 @@ impl SingleFileCleaner {
         );
 
         Ok((file_info, chunk_hashes, mdb_file_info, deduplication_metrics))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::processing::configurations::TranslatorConfig;
+
+    #[test]
+    fn test_finish_or_abort_untracks_file_on_failure() {
+        let temp = tempdir().unwrap();
+        let ctx = XetContext::default().unwrap();
+        let config = TranslatorConfig::local_config(&ctx, &temp.path().join("cas")).unwrap();
+
+        ctx.runtime
+            .bridge_sync(async move {
+                let session = FileUploadSession::new(config.into()).await.unwrap();
+                let (_id, mut cleaner) = session.start_clean(None, None, Sha256Policy::Skip).unwrap();
+                cleaner.add_data(b"unfinished").await.unwrap();
+
+                // Stand-in for a failed dedup batch, which makes finishing fail.
+                cleaner.dedup_state = DedupState::Empty;
+                assert!(cleaner.finish_or_abort().await.is_err());
+                assert_eq!(session.report().total_bytes, 0);
+            })
+            .unwrap();
     }
 }

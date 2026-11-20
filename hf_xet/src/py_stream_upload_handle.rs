@@ -15,7 +15,8 @@ use crate::{PyXetTaskState, convert_xet_error};
 /// - the context manager, which calls :meth:`finish` automatically on normal exit and :meth:`abort` on exception.
 ///
 /// **:meth:`finish` (or the context manager) must complete before**
-/// :meth:`XetUploadCommit.wait_to_finish` is called.
+/// :meth:`XetUploadCommit.wait_to_finish` is called, unless the stream was
+/// aborted: an aborted stream is left out of the commit.
 ///
 /// ```python
 /// with commit.start_upload_stream(name="big.bin") as stream:
@@ -48,7 +49,7 @@ impl PyXetStreamUpload {
     }
 
     /// Calls :meth:`finish` on normal exit (idempotent if already finished) or :meth:`abort` on
-    /// exception; never suppresses the exception.
+    /// exception, including when that :meth:`finish` fails; never suppresses the exception.
     fn __exit__(
         &self,
         py: Python<'_>,
@@ -59,8 +60,12 @@ impl PyXetStreamUpload {
         if exc_type.is_none() {
             // Normal exit: finalise the stream only if not already done (idempotent — avoids a
             // double-finish error when the caller explicitly called finish() inside the with-block).
-            if self.inner.try_finish().is_none() {
-                self.finish(py)?;
+            if self.inner.try_finish().is_none()
+                && let Err(e) = self.finish(py)
+            {
+                // A failed finish is an exception too: abort so the commit leaves the stream out.
+                self.inner.abort();
+                return Err(e);
             }
         } else {
             // Exception path: cancel the upload (infallible).
@@ -113,6 +118,11 @@ impl PyXetStreamUpload {
     }
 
     /// Cancel the streaming upload.
+    ///
+    /// Works on a running stream or one whose :meth:`write` or :meth:`finish` failed;
+    /// once :meth:`finish` has started or succeeded, it does nothing. An aborted stream
+    /// is left out of :meth:`XetUploadCommit.wait_to_finish`, so a failed file can be
+    /// retried with a new stream in the same commit.
     pub fn abort(&self) {
         self.inner.abort();
     }
