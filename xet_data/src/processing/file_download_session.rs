@@ -416,6 +416,7 @@ impl FileDownloadSession {
         if let (Some(offset), Some(file_size)) = (offset, file_info.file_size())
             && offset >= file_size
         {
+            progress_updater.update_item_size(0, true);
             return Ok(offset);
         }
 
@@ -683,10 +684,15 @@ mod tests {
                 let out_path = temp.path().join("resume_complete.txt");
                 write(&out_path, original_data).unwrap();
 
-                let (_id, n_bytes) = session.download_file(&xfi, &out_path, true).await.unwrap();
+                let (id, n_bytes) = session.download_file(&xfi, &out_path, true).await.unwrap();
 
                 assert_eq!(n_bytes, original_data.len() as u64);
                 assert_eq!(read(&out_path).unwrap(), original_data);
+
+                let report = session.progress.item_report(id).unwrap();
+                assert_eq!(report.bytes_completed, 0);
+                assert_eq!(report.total_bytes, 0);
+                assert!(session.progress.all_items_complete());
             })
             .unwrap();
     }

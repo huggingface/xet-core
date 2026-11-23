@@ -188,7 +188,7 @@ class TestFileDownloadResume:
         assert dest.read_bytes() == data
 
     def test_resume_result_has_correct_file_size(self, endpoint, tmp_path):
-        data = b"resume result check"
+        data = b"resume result has correct values"
         info = upload_bytes_get_info(endpoint, data)
         dest = tmp_path / "out.bin"
         dest.write_bytes(data[:20])
