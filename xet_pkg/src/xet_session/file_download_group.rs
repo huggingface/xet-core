@@ -192,7 +192,8 @@ impl XetFileDownloadGroup {
     ///   [`XetUploadCommit::commit`](crate::xet_session::XetUploadCommit::commit).
     /// * `dest_path` – Local path where the downloaded file will be written. Parent directories are created
     ///   automatically.
-    /// * `resume` - If `dest_path` exists appends it instead of truncating
+    /// * `resume` - If `dest_path` exists appends it instead of truncating, verifies hash of produced file and
+    ///   redownloads it from scratch if it's incorrect
     ///
     /// Returns a [`XetFileDownload`] that can be used to poll status and per-file
     /// progress without taking the GIL.
@@ -202,7 +203,7 @@ impl XetFileDownloadGroup {
     /// Returns [`XetError::UserCancelled`] if the session has been aborted, or
     /// [`XetError::AlreadyCompleted`] if [`finish`](Self::finish) has already
     /// been called.
-    pub async fn download_file_to_path(
+    pub async fn start_download_file(
         &self,
         file_info: XetFileInfo,
         dest_path: PathBuf,
@@ -213,6 +214,46 @@ impl XetFileDownloadGroup {
             dest_path = ?dest_path,
             hash = %file_info.hash,
             resume = resume,
+            "Start download file"
+        );
+        let inner = self.inner.clone();
+        let task_runtime = self.task_runtime.clone();
+        self.task_runtime
+            .bridge_async("start_download_file", async move {
+                inner
+                    .start_download_file_to_path(file_info, dest_path, resume, &task_runtime)
+                    .await
+            })
+            .await
+    }
+
+    /// Queue a file for download to `dest_path`, starting the transfer immediately if system resource permits.
+    ///
+    /// # Parameters
+    ///
+    /// * `file_info` – Content-addressed hash and size returned by a previous
+    ///   [`XetUploadCommit::commit`](crate::xet_session::XetUploadCommit::commit).
+    /// * `dest_path` – Local path where the downloaded file will be written. Parent directories are created
+    ///   automatically.
+    ///
+    /// Returns a [`XetFileDownload`] that can be used to poll status and per-file
+    /// progress without taking the GIL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`XetError::UserCancelled`] if the session has been aborted, or
+    /// [`XetError::AlreadyCompleted`] if [`finish`](Self::finish) has already
+    /// been called.
+    #[deprecated(since = "1.9.0", note = "use `start_download_file` instead")]
+    pub async fn download_file_to_path(
+        &self,
+        file_info: XetFileInfo,
+        dest_path: PathBuf,
+    ) -> Result<XetFileDownload, XetError> {
+        info!(
+            group_id = %self.id(),
+            dest_path = ?dest_path,
+            hash = %file_info.hash,
             "Download file to path"
         );
         let inner = self.inner.clone();
@@ -220,7 +261,7 @@ impl XetFileDownloadGroup {
         self.task_runtime
             .bridge_async("download_file_to_path", async move {
                 inner
-                    .start_download_file_to_path(file_info, dest_path, resume, &task_runtime)
+                    .start_download_file_to_path(file_info, dest_path, false, &task_runtime)
                     .await
             })
             .await
@@ -278,6 +319,39 @@ impl XetFileDownloadGroup {
         matches!(self.task_runtime.status(), Ok(XetTaskState::Completed))
     }
 
+    /// Blocking version of [`start_download_file`](Self::start_download_file).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`XetError::WrongRuntimeMode`] if the session was created with an external
+    /// tokio runtime. Use [`start_download_file`](Self::start_download_file)`.await`
+    /// instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    pub fn start_download_file_blocking(
+        &self,
+        file_info: XetFileInfo,
+        dest_path: PathBuf,
+        resume: bool,
+    ) -> Result<XetFileDownload, XetError> {
+        info!(
+            group_id = %self.id(),
+            dest_path = ?dest_path,
+            hash = %file_info.hash,
+            resume = resume,
+            "Start download file"
+        );
+        let inner = self.inner.clone();
+        let task_runtime = self.task_runtime.clone();
+        self.task_runtime.bridge_sync("start_download_file_blocking", async move {
+            inner
+                .start_download_file_to_path(file_info, dest_path, resume, &task_runtime)
+                .await
+        })
+    }
+
     /// Blocking version of [`download_file_to_path`](Self::download_file_to_path).
     ///
     /// # Errors
@@ -289,24 +363,23 @@ impl XetFileDownloadGroup {
     /// # Panics
     ///
     /// Panics if called from within a tokio async runtime on an Owned-mode session.
+    #[deprecated(since = "1.9.0", note = "use `start_download_file_blocking` instead")]
     pub fn download_file_to_path_blocking(
         &self,
         file_info: XetFileInfo,
         dest_path: PathBuf,
-        resume: bool,
     ) -> Result<XetFileDownload, XetError> {
         info!(
             group_id = %self.id(),
             dest_path = ?dest_path,
             hash = %file_info.hash,
-            resume = resume,
             "Download file to path"
         );
         let inner = self.inner.clone();
         let task_runtime = self.task_runtime.clone();
         self.task_runtime.bridge_sync("download_file_to_path_blocking", async move {
             inner
-                .start_download_file_to_path(file_info, dest_path, resume, &task_runtime)
+                .start_download_file_to_path(file_info, dest_path, false, &task_runtime)
                 .await
         })
     }
@@ -605,7 +678,7 @@ mod tests {
         let group = session.new_file_download_group().unwrap().build().await.unwrap();
         session.abort().unwrap();
         let err = group
-            .download_file_to_path(
+            .start_download_file(
                 XetFileInfo {
                     hash: "abc123".to_string(),
                     file_size: Some(1024),
@@ -627,7 +700,7 @@ mod tests {
         let g2 = g1.clone();
         g1.finish().await.unwrap();
         let err = g2
-            .download_file_to_path(
+            .start_download_file(
                 XetFileInfo {
                     hash: "abc123".to_string(),
                     file_size: Some(1024),
@@ -648,7 +721,7 @@ mod tests {
         let group = session.new_file_download_group().unwrap().build().await.unwrap();
         group.abort().unwrap();
         let err = group
-            .download_file_to_path(
+            .start_download_file(
                 XetFileInfo {
                     hash: "abc123".to_string(),
                     file_size: Some(1024),
@@ -693,7 +766,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let handle = group.download_file_to_path(file_info, dest.clone(), false).await.unwrap();
+        let handle = group.start_download_file(file_info, dest.clone(), false).await.unwrap();
         assert!(matches!(handle.status().unwrap(), XetTaskState::Running | XetTaskState::Completed));
         group.finish().await.unwrap();
         assert!(matches!(handle.status().unwrap(), XetTaskState::Completed));
@@ -715,7 +788,7 @@ mod tests {
             .await
             .unwrap();
         let handle = group
-            .download_file_to_path(
+            .start_download_file(
                 XetFileInfo {
                     hash: "abc123".to_string(),
                     file_size: Some(123),
@@ -748,7 +821,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let handle = group.download_file_to_path(file_info, dest, false).await.unwrap();
+        let handle = group.start_download_file(file_info, dest, false).await.unwrap();
 
         let mut reports = HashMap::new();
         for _ in 0..50 {
@@ -806,8 +879,8 @@ mod tests {
             .build()
             .await
             .unwrap();
-        group.download_file_to_path(file_a_info, dest_a.clone(), false).await.unwrap();
-        group.download_file_to_path(file_b_info, dest_b.clone(), false).await.unwrap();
+        group.start_download_file(file_a_info, dest_a.clone(), false).await.unwrap();
+        group.start_download_file(file_b_info, dest_b.clone(), false).await.unwrap();
         group.finish().await.unwrap();
 
         assert_eq!(std::fs::read(&dest_a).unwrap(), data_a);
@@ -832,7 +905,7 @@ mod tests {
             .await
             .unwrap();
         let progress_observer = group.clone();
-        group.download_file_to_path(file_info, dest, false).await.unwrap();
+        group.start_download_file(file_info, dest, false).await.unwrap();
         let finish_report = group.finish().await.unwrap();
         assert_eq!(finish_report.progress.total_bytes, original.len() as u64);
         assert_eq!(finish_report.progress.total_bytes_completed, original.len() as u64);
@@ -872,7 +945,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let handle = group.download_file_to_path(file_info, dest, false).await.unwrap();
+        let handle = group.start_download_file(file_info, dest, false).await.unwrap();
         let report = group.finish().await.unwrap();
         let result = report
             .downloads
@@ -896,7 +969,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let handle = group.download_file_to_path(file_info, dest, false).await.unwrap();
+        let handle = group.start_download_file(file_info, dest, false).await.unwrap();
         assert!(handle.result().is_none(), "result must be None before finish()");
         group.finish().await.unwrap();
     }
@@ -917,7 +990,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let handle = group.download_file_to_path(file_info.clone(), dest, false).await.unwrap();
+        let handle = group.start_download_file(file_info.clone(), dest, false).await.unwrap();
         group.finish().await.unwrap();
         let result = handle.result().expect("result must be set after finish()");
         let dl = result.unwrap();
@@ -940,7 +1013,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let handle = group.download_file_to_path(file_info, dest, false).await.unwrap();
+        let handle = group.start_download_file(file_info, dest, false).await.unwrap();
         let first = handle.finish().await.unwrap();
         let second = handle.finish().await.unwrap();
         assert_eq!(first.file_info.hash, second.file_info.hash);
@@ -987,7 +1060,7 @@ mod tests {
                 .build()
                 .await
                 .unwrap();
-            group.download_file_to_path(file_info, dest.clone(), false).await.unwrap();
+            group.start_download_file(file_info, dest.clone(), false).await.unwrap();
             group.finish().await.unwrap();
             assert_eq!(std::fs::read(&dest).unwrap(), data);
         });
@@ -1028,7 +1101,7 @@ mod tests {
                 .build()
                 .await
                 .unwrap();
-            group.download_file_to_path(file_info, dest.clone(), false).await.unwrap();
+            group.start_download_file(file_info, dest.clone(), false).await.unwrap();
             group.finish().await.unwrap();
             assert_eq!(std::fs::read(&dest).unwrap(), data);
         });
@@ -1054,7 +1127,7 @@ mod tests {
 
         let dest = temp.path().join("downloaded.bin");
         let group = session.new_file_download_group()?.with_endpoint(&endpoint).build_blocking()?;
-        group.download_file_to_path_blocking(file_info, dest.clone(), false)?;
+        group.start_download_file_blocking(file_info, dest.clone(), false)?;
         group.finish_blocking()?;
 
         assert_eq!(std::fs::read(&dest)?, original);
@@ -1086,8 +1159,8 @@ mod tests {
         let dest_a = temp.path().join("a_out.bin");
         let dest_b = temp.path().join("b_out.bin");
         let group = session.new_file_download_group()?.with_endpoint(&endpoint).build_blocking()?;
-        group.download_file_to_path_blocking(file_a_info, dest_a.clone(), false)?;
-        group.download_file_to_path_blocking(file_b_info, dest_b.clone(), false)?;
+        group.start_download_file_blocking(file_a_info, dest_a.clone(), false)?;
+        group.start_download_file_blocking(file_b_info, dest_b.clone(), false)?;
         group.finish_blocking()?;
 
         assert_eq!(std::fs::read(&dest_a)?, data_a);
@@ -1106,7 +1179,7 @@ mod tests {
         let dest = temp.path().join("out.bin");
         let group = session.new_file_download_group()?.with_endpoint(&endpoint).build_blocking()?;
         let progress_observer = group.clone();
-        group.download_file_to_path_blocking(file_info, dest, false)?;
+        group.start_download_file_blocking(file_info, dest, false)?;
         group.finish_blocking()?;
 
         std::thread::sleep(
@@ -1135,7 +1208,7 @@ mod tests {
         let file_info = upload_bytes_blocking(&session, &endpoint, data, "file.bin")?;
         let dest = temp.path().join("out.bin");
         let group = session.new_file_download_group()?.with_endpoint(&endpoint).build_blocking()?;
-        let handle = group.download_file_to_path_blocking(file_info.clone(), dest, false)?;
+        let handle = group.start_download_file_blocking(file_info.clone(), dest, false)?;
 
         // Before finish, per-task result is not available yet.
         assert!(handle.result().is_none());
@@ -1175,7 +1248,7 @@ mod tests {
                 .with_endpoint(&endpoint)
                 .build_blocking()
                 .unwrap();
-            group.download_file_to_path_blocking(file_info, dest.clone(), false).unwrap();
+            group.start_download_file_blocking(file_info, dest.clone(), false).unwrap();
             group.finish_blocking().unwrap();
             assert_eq!(std::fs::read(&dest).unwrap(), data);
         }));
@@ -1205,7 +1278,7 @@ mod tests {
             sha256: None,
         };
         let err = group
-            .download_file_to_path_blocking(file_info, PathBuf::from("/nonexistent"), false)
+            .start_download_file_blocking(file_info, PathBuf::from("/nonexistent"), false)
             .err()
             .unwrap();
         assert!(matches!(err, XetError::WrongRuntimeMode(_)));
@@ -1228,7 +1301,7 @@ mod tests {
             sha256: None,
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            rt.block_on(async { group.download_file_to_path_blocking(file_info, PathBuf::from("/nonexistent"), false) })
+            rt.block_on(async { group.start_download_file_blocking(file_info, PathBuf::from("/nonexistent"), false) })
         }));
         assert!(result.is_err(), "download_file_to_path_blocking() must panic when called from async");
     }

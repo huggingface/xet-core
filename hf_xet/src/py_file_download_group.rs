@@ -175,7 +175,7 @@ impl PyXetFileDownloadGroup {
         let inner = self.inner.clone();
         let handle = py.detach(|| {
             inner
-                .download_file_to_path_blocking(file_info, path, resume)
+                .start_download_file_blocking(file_info, path, resume)
                 .map_err(convert_xet_error)
         })?;
         if let Some(ref handles) = self.download_handles {
