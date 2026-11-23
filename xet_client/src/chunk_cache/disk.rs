@@ -262,15 +262,17 @@ impl DiskCache {
                 };
 
                 let key_dir_name = key_dir.file_name();
+                let key_dir_name_bytes = key_dir_name.as_encoded_bytes();
+                let Some(key_dir_prefix) = key_dir_name_bytes.get(..PREFIX_DIR_NAME_LEN) else {
+                    debug!("key dir name len < {PREFIX_DIR_NAME_LEN}: {key_dir_name:?}");
+                    continue;
+                };
+                if !key_dir_prefix.eq_ignore_ascii_case(key_prefix_dir_name.as_encoded_bytes()) {
+                    debug!("key dir prefix does not match parent directory: {key_dir_name:?}");
+                    continue;
+                }
 
-                // asserts that the prefix dir name is actually the prefix of this key dir
-                debug_assert_eq!(
-                    key_dir_name.as_encoded_bytes()[..PREFIX_DIR_NAME_LEN].to_ascii_uppercase(),
-                    key_prefix_dir_name.as_encoded_bytes().to_ascii_uppercase(),
-                    "{key_dir_name:?}",
-                );
-
-                let key = match try_parse_key(key_dir_name.as_encoded_bytes()) {
+                let key = match try_parse_key(key_dir_name_bytes) {
                     Ok(key) => key,
                     Err(e) => {
                         debug!("failed to decoded a directory name as a key: {e}");
@@ -783,7 +785,10 @@ fn check_remove_dir(dir_path: impl AsRef<Path>) -> Result<(), ChunkCacheError> {
 /// expects only the key portion of the file path, with the prefix not present.
 fn try_parse_key(file_name: &[u8]) -> Result<Key, ChunkCacheError> {
     let buf = BASE64_ENGINE.decode(file_name)?;
-    let hash = MerkleHash::from_slice(&buf[..size_of::<MerkleHash>()])?;
+    let hash_bytes = buf
+        .get(..size_of::<MerkleHash>())
+        .ok_or_else(|| ChunkCacheError::parse("decoded key is shorter than a MerkleHash"))?;
+    let hash = MerkleHash::from_slice(hash_bytes)?;
     let prefix = String::from(std::str::from_utf8(&buf[size_of::<MerkleHash>()..])?);
     Ok(Key { prefix, hash })
 }
@@ -854,6 +859,48 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn test_initialize_ignores_short_key_directory_name() {
+        let cache_root = TempDir::new().unwrap();
+        std::fs::create_dir_all(cache_root.path().join("ab").join("x")).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
+        };
+
+        let cache = DiskCache::initialize(&XetConfig::new(), &config).unwrap();
+
+        assert_eq!(cache.state.blocking_read().num_items, 0);
+    }
+
+    #[test]
+    fn test_initialize_ignores_short_decoded_key() {
+        let cache_root = TempDir::new().unwrap();
+        std::fs::create_dir_all(cache_root.path().join("AA").join("AA")).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
+        };
+
+        let cache = DiskCache::initialize(&XetConfig::new(), &config).unwrap();
+
+        assert_eq!(cache.state.blocking_read().num_items, 0);
+    }
+
+    #[test]
+    fn test_initialize_ignores_key_directory_under_wrong_prefix() {
+        let cache_root = TempDir::new().unwrap();
+        std::fs::create_dir_all(cache_root.path().join("ab").join("cd000000000000000000000000000000")).unwrap();
+        let config = CacheConfig {
+            cache_directory: cache_root.path().to_path_buf(),
+            cache_size: DEFAULT_CHUNK_CACHE_CAPACITY,
+        };
+
+        let cache = DiskCache::initialize(&XetConfig::new(), &config).unwrap();
+
+        assert_eq!(cache.state.blocking_read().num_items, 0);
     }
 
     #[tokio::test]
