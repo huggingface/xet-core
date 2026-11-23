@@ -368,7 +368,10 @@ impl FileDownloadSession {
         // An empty or missing local file has nothing to resume from, so it is a fresh download and
         // needs no verification.
         let resume = resume && std::fs::metadata(write_path).is_ok_and(|m| m.len() > 0);
-        let n_bytes = self.download_file_with_id(file_info, write_path, resume, id).await?;
+        let progress_updater = self.progress.new_item(id, write_path.to_string_lossy().as_ref());
+        let n_bytes = self
+            .download_file_with_progress(file_info, write_path, resume, progress_updater.clone())
+            .await?;
         if !resume || self.verify_local_file(file_info, write_path).await? {
             return Ok(n_bytes);
         }
@@ -379,8 +382,10 @@ impl FileDownloadSession {
             "Resumed download failed hash verification; downloading from scratch"
         );
 
-        self.progress.remove_item(id);
-        self.download_file_with_id(file_info, write_path, false, id).await
+        // Same item, so the file is counted once: the redo replaces the abandoned attempt's progress.
+        progress_updater.reset();
+        self.download_file_with_progress(file_info, write_path, false, progress_updater)
+            .await
     }
 
     async fn verify_local_file(&self, file_info: &XetFileInfo, path: &Path) -> Result<bool> {
@@ -396,16 +401,13 @@ impl FileDownloadSession {
         Ok(local.hash() == file_info.hash())
     }
 
-    async fn download_file_with_id(
+    async fn download_file_with_progress(
         &self,
         file_info: &XetFileInfo,
         write_path: &Path,
         resume: bool,
-        id: UniqueId,
+        progress_updater: Arc<ItemProgressUpdater>,
     ) -> Result<u64> {
-        let name = Arc::from(write_path.to_string_lossy().as_ref());
-        let progress_updater = self.progress.new_item(id, name);
-
         let offset = if resume {
             std::fs::metadata(write_path).map(|f| f.len()).ok()
         } else {
@@ -727,7 +729,9 @@ mod tests {
                 let group = session.report();
                 assert_eq!(group.total_bytes, original_data.len() as u64);
                 assert_eq!(group.total_bytes_completed, original_data.len() as u64);
+                assert_eq!(group.total_transfer_bytes_completed, group.total_transfer_bytes);
                 assert_eq!(session.n_items(), 1);
+                assert!(session.progress.all_items_complete());
             })
             .unwrap();
     }

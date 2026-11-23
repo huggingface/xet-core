@@ -35,9 +35,15 @@ With `resume = true`:
 - A file that is already complete reconstructs zero bytes, then is verified like any other resume.
 
 Progress for a resumed file covers only the downloaded part: its `total_bytes` is the file size
-minus the local prefix. When verification fails and the file is downloaded again, the abandoned
-attempt's logical bytes are removed from the group totals, so the file is counted once at its full
-size; the bytes already fetched for it stay in the transfer totals.
+minus the local prefix. When verification fails and the file is downloaded again, the file's
+progress item is reset: its completed bytes return to zero (and are withdrawn from the group's
+completed bytes), and its total grows to the full file size. The file is therefore counted once at
+its full size, and totals never decrease; the bytes already fetched for it stay in the transfer
+totals.
+
+Completed bytes can therefore go down once, at the fallback. Legacy progress callbacks turn reports
+into increments with `saturating_sub`, so a consumer that sums increments overshoots by the abandoned
+attempt's bytes on a fallback.
 
 ### Deprecated: `download_file_to_path` / `download_file_to_path_blocking`
 
@@ -76,5 +82,3 @@ Defaults to `False`, so existing calls are unaffected. `resume=True` behaves as 
 
 - `FileDownloadSession::download_file` and `download_file_background` take a third argument,
   `resume: bool`. Pass `false` for the previous behavior.
-- `GroupProgress::remove_item(id)` is new. It unregisters an item and subtracts its logical bytes
-  from the group totals.
