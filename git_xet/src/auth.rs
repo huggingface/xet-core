@@ -1,7 +1,9 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use git_extension_common::{GitCredentialHelper, GitRepo, GitUrl, Interaction, SSHCredentialHelper, Scheme};
+use git_extension_common::{
+    CredentialSource, GitCredentialHelper, GitRepo, GitUrl, Interaction, SSHCredentialHelper, Scheme,
+};
 use netrc::Netrc;
 use xet_client::hub_client::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper, Operation};
 
@@ -83,25 +85,29 @@ impl AccessMode {
 //     user for a password to fetch public repository data.
 //  2. The Git Remote URL, which should be something like "https://git.com/repo.git" This URL is used for the Git
 //     Credential Helper. This way existing https Git remote credentials can be re-used for LFS.
-pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation) -> Result<Arc<dyn CredentialHelper>> {
+pub fn get_credential(
+    repo: &GitRepo,
+    remote_url: &GitUrl,
+    operation: Operation,
+) -> Result<(Arc<dyn CredentialHelper>, CredentialSource)> {
     let access = AccessMode::from_repo_and_remote_url(repo, remote_url)?;
     let derived_host_url = remote_url.to_derived_http_host_url()?;
 
     // 1. check access mode
     if access == AccessMode::None {
-        return Ok(NoopCredentialHelper::new());
+        return Ok((NoopCredentialHelper::new(), CredentialSource::Anonymous));
     }
 
     // 2. check embedded authentication
     let credential = remote_url.credential();
     // valid only when both user and token exist
     if let (Some(_user), Some(token)) = credential {
-        return Ok(BearerCredentialHelper::new(token, "url"));
+        return Ok((BearerCredentialHelper::new(token), CredentialSource::RemoteUrl));
     }
 
     // 3. check credential from environment
     if let Ok(token) = std::env::var(HF_TOKEN_ENV) {
-        return Ok(BearerCredentialHelper::new(token, "env"));
+        return Ok((BearerCredentialHelper::new(token), CredentialSource::Environment(HF_TOKEN_ENV)));
     }
 
     // 4. check netrc file
@@ -110,7 +116,7 @@ pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation)
         if let Some(host_name) = derived_host_name {
             for (host, auth) in nrc.hosts {
                 if host.eq(host_name) {
-                    return Ok(BearerCredentialHelper::new(auth.password, "netrc"));
+                    return Ok((BearerCredentialHelper::new(auth.password), CredentialSource::Netrc));
                 }
             }
         }
@@ -118,13 +124,16 @@ pub fn get_credential(repo: &GitRepo, remote_url: &GitUrl, operation: Operation)
 
     // 5. check remote URL scheme
     if matches!(remote_url.scheme(), Scheme::Ssh | Scheme::GitSsh) {
-        return Ok(SSHCredentialHelper::new(remote_url, repo, operation, Interaction::Allowed));
+        return Ok((
+            SSHCredentialHelper::new(remote_url, repo, operation, Interaction::Allowed),
+            CredentialSource::Ssh,
+        ));
     }
 
     // 6. check Git credential helper
     let helper = GitCredentialHelper::new(repo.git_path()?, &derived_host_url, Interaction::Allowed)?
         .ok_or_else(|| GitXetError::config_error(format!("failed to find authentication for {derived_host_url}")))?;
-    Ok(helper)
+    Ok((helper, CredentialSource::GitCredentialHelper))
 }
 
 #[cfg(test)]
@@ -173,7 +182,7 @@ mod test_cred_helpers {
     use xet_client::hub_client::Operation;
     use xet_runtime::utils::EnvVarGuard;
 
-    use super::get_credential;
+    use super::{CredentialSource, get_credential};
     use crate::constants::HF_TOKEN_ENV;
 
     #[test]
@@ -224,8 +233,8 @@ mod test_cred_helpers {
         let remote_url = repo.remote_url()?;
         let operation = Operation::Upload;
 
-        let cred_helper = get_credential(&repo, &remote_url, operation)?;
-        assert_eq!(cred_helper.whoami(), "git");
+        let (_, source) = get_credential(&repo, &remote_url, operation)?;
+        assert_eq!(source, CredentialSource::GitCredentialHelper);
 
         Ok(())
     }
@@ -244,8 +253,8 @@ mod test_cred_helpers {
         let remote_url = repo.remote_url()?;
         let operation = Operation::Upload;
 
-        let cred_helper = get_credential(&repo, &remote_url, operation)?;
-        assert_eq!(cred_helper.whoami(), "ssh");
+        let (_, source) = get_credential(&repo, &remote_url, operation)?;
+        assert_eq!(source, CredentialSource::Ssh);
 
         Ok(())
     }
@@ -270,8 +279,8 @@ mod test_cred_helpers {
         let remote_url = repo.remote_url()?;
         let operation = Operation::Upload;
 
-        let cred_helper = get_credential(&repo, &remote_url, operation)?;
-        assert_eq!(cred_helper.whoami(), "netrc");
+        let (_, source) = get_credential(&repo, &remote_url, operation)?;
+        assert_eq!(source, CredentialSource::Netrc);
 
         Ok(())
     }
@@ -293,8 +302,8 @@ mod test_cred_helpers {
         let remote_url = repo.remote_url()?;
         let operation = Operation::Upload;
 
-        let cred_helper = get_credential(&repo, &remote_url, operation)?;
-        assert_eq!(cred_helper.whoami(), "env");
+        let (_, source) = get_credential(&repo, &remote_url, operation)?;
+        assert_eq!(source, CredentialSource::Environment(HF_TOKEN_ENV));
 
         Ok(())
     }
@@ -313,8 +322,8 @@ mod test_cred_helpers {
         let remote_url = repo.remote_url()?;
         let operation = Operation::Upload;
 
-        let cred_helper = get_credential(&repo, &remote_url, operation)?;
-        assert_eq!(cred_helper.whoami(), "url");
+        let (_, source) = get_credential(&repo, &remote_url, operation)?;
+        assert_eq!(source, CredentialSource::RemoteUrl);
 
         Ok(())
     }
@@ -336,8 +345,8 @@ mod test_cred_helpers {
         let remote_url = repo.remote_url()?;
         let operation = Operation::Upload;
 
-        let cred_helper = get_credential(&repo, &remote_url, operation)?;
-        assert_eq!(cred_helper.whoami(), "noop");
+        let (_, source) = get_credential(&repo, &remote_url, operation)?;
+        assert_eq!(source, CredentialSource::Anonymous);
 
         Ok(())
     }
