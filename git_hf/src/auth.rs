@@ -27,11 +27,12 @@
 //! them. A local remote (a path or `file://` URL) has no host to authenticate to, so it is anonymous too.
 #![cfg_attr(not(test), expect(dead_code, reason = "used by the clean filter and pre-push"))]
 
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use git_extension_common::{GitCredentialHelper, GitRepo, GitUrl, Interaction, SSHCredentialHelper, Scheme};
+use git_extension_common::{
+    CredentialSource, GitCredentialHelper, GitRepo, GitUrl, Interaction, SSHCredentialHelper, Scheme,
+};
 use netrc::Netrc;
 use url::Url;
 use xet_client::error::ClientError;
@@ -42,33 +43,6 @@ use crate::constants::{
     SSH_AUTH_GUIDANCE,
 };
 use crate::{GitHfError, Result};
-
-/// Where a [`ResolvedCredential`] came from, for messages. Never includes the secret itself.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CredentialSource {
-    RemoteUrl,
-    /// The environment variable that held the token.
-    Environment(&'static str),
-    TokenFile(PathBuf),
-    Netrc,
-    Ssh,
-    GitCredentialHelper,
-    Anonymous,
-}
-
-impl fmt::Display for CredentialSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RemoteUrl => write!(f, "the token in the remote URL"),
-            Self::Environment(name) => write!(f, "{name}"),
-            Self::TokenFile(path) => write!(f, "the token file {}", path.display()),
-            Self::Netrc => write!(f, ".netrc"),
-            Self::Ssh => write!(f, "SSH authentication"),
-            Self::GitCredentialHelper => write!(f, "the Git credential helper"),
-            Self::Anonymous => write!(f, "no credentials"),
-        }
-    }
-}
 
 /// A credential helper for Hub requests and the source it came from.
 pub struct ResolvedCredential {
@@ -128,8 +102,8 @@ pub fn resolve_credential(
     operation: Operation,
     interaction: Interaction,
 ) -> Result<ResolvedCredential> {
-    let bearer = |token: String, source: CredentialSource, whoami| ResolvedCredential {
-        helper: BearerCredentialHelper::new(token, whoami),
+    let bearer = |token: String, source: CredentialSource| ResolvedCredential {
+        helper: BearerCredentialHelper::new(token),
         source,
     };
     let anonymous = || ResolvedCredential {
@@ -150,7 +124,7 @@ pub fn resolve_credential(
     }
 
     let username = match remote_url.credential() {
-        (Some(_user), Some(token)) => return Ok(bearer(token, CredentialSource::RemoteUrl, "url")),
+        (Some(_user), Some(token)) => return Ok(bearer(token, CredentialSource::RemoteUrl)),
         (username, None) => username,
         (None, Some(_)) => None,
     };
@@ -158,7 +132,7 @@ pub fn resolve_credential(
     let host_url = remote_url.to_derived_http_host_url()?;
 
     if let Some(token) = netrc_token(&host_url, username.as_deref()) {
-        return Ok(bearer(token, CredentialSource::Netrc, "netrc"));
+        return Ok(bearer(token, CredentialSource::Netrc));
     }
 
     let query_url = match &username {
@@ -176,13 +150,13 @@ pub fn resolve_credential(
         // As in huggingface_hub, a blank `HF_TOKEN` falls through to the legacy name.
         for name in [HF_TOKEN_ENV, LEGACY_HF_TOKEN_ENV] {
             if let Some(token) = std::env::var(name).ok().filter(|token| !token.trim().is_empty()) {
-                return Ok(bearer(token.trim().to_owned(), CredentialSource::Environment(name), "env"));
+                return Ok(bearer(token.trim().to_owned(), CredentialSource::Environment(name)));
             }
         }
         if let Some(path) = token_file_path()
             && let Some(token) = read_token_file(&path)?
         {
-            return Ok(bearer(token, CredentialSource::TokenFile(path), "token-file"));
+            return Ok(bearer(token, CredentialSource::TokenFile(path)));
         }
     }
 
@@ -596,7 +570,7 @@ mod tests {
         let url: GitUrl = REMOTE.parse()?;
         let ctx = XetContext::default()?;
         let token = |source| ResolvedCredential {
-            helper: BearerCredentialHelper::new("hf_secret".into(), "test"),
+            helper: BearerCredentialHelper::new("hf_secret".into()),
             source,
         };
         for (status, source, operation, expected) in [

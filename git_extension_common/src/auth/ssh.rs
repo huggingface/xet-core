@@ -152,10 +152,6 @@ impl CredentialHelper for SSHCredentialHelper {
             None => Ok(req),
         }
     }
-
-    fn whoami(&self) -> &str {
-        "ssh"
-    }
 }
 
 #[cfg(test)]

@@ -132,7 +132,7 @@ fn build_hub_client(
     let mut headers = HeaderMap::new();
     headers.insert(header::USER_AGENT, HeaderValue::from_static(USER_AGENT));
 
-    let cred_helper = BearerCredentialHelper::new(token.to_owned(), "");
+    let cred_helper = BearerCredentialHelper::new(token.to_owned());
     HubClient::new(
         ctx.clone(),
         hub_endpoint,

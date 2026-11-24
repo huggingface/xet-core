@@ -68,7 +68,7 @@ impl GitCredentialHelper {
     ) -> Result<Option<Arc<BearerCredentialHelper>>> {
         let hf_token = Self::authenticate(repo_path.as_ref(), host_url, interaction)?;
 
-        Ok(hf_token.map(|hf_token| BearerCredentialHelper::new(hf_token, "git")))
+        Ok(hf_token.map(BearerCredentialHelper::new))
     }
 
     fn authenticate(repo_path: &Path, host_url: &str, interaction: Interaction) -> Result<Option<String>> {
