@@ -8,62 +8,44 @@
 //! 2. `.netrc`, matched by the remote's hostname, which Git also reads;
 //! 3. Git's credential helpers. With [`Interaction::Allowed`], Git may prompt.
 //!
-//! [`Interaction::Allowed`] (pre-push) fails if none of these yields a credential.
+//! As in Git, a username in the remote URL (`https://user@host/...`) selects that user's `.netrc`
+//! entry, and the credential helpers are asked about the remote URL itself, username included, so a
+//! host with several accounts yields the right one, and `credential.useHttpPath` can select a
+//! repository's credential.
 //!
 //! [`Interaction::Never`] (the clean filter) never prompts: SSH runs in batch mode, and helpers return
 //! only stored credentials. A credential there improves deduplication but isn't required, so if an
 //! HTTP(S) remote has none of the above, it falls back to:
 //!
 //! 4. the `HF_TOKEN` environment variable, or the legacy `HUGGING_FACE_HUB_TOKEN`;
-//! 5. the Hugging Face token file written by `hf auth login`;
+//! 5. the Hugging Face token file written by `hf auth login`.
 //!
-//! and otherwise makes anonymous requests, which are enough to read public repositories. Steps 4 and 5
-//! aren't tied to a host, so they apply only to Hub hosts (`huggingface.co`, `hf.co`, the staging Hub,
-//! or the host of `HF_ENDPOINT`); a repository's `.gitattributes` can't send a Hub token elsewhere.
+//! Steps 4 and 5 aren't tied to a host, so they apply only to Hub hosts (`huggingface.co`, `hf.co`, the
+//! staging Hub, or the host of `HF_ENDPOINT`); a repository's `.gitattributes` can't send a Hub token
+//! elsewhere. [`Interaction::Allowed`] (pre-push) uses only what `git push` can use, so it skips them.
+//!
+//! With no credential, requests are anonymous, and the server decides whether that is enough: public
+//! repositories can be read, and a server without authentication, such as a local test server, accepts
+//! them. Like Git, other remotes, such as `git://` or a local path, use none of the Git sources above.
 #![cfg_attr(not(test), expect(dead_code, reason = "used by the clean filter and pre-push"))]
 
-use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use git_extension_common::{GitCredentialHelper, GitRepo, GitUrl, Interaction, SSHCredentialHelper, Scheme};
+use git_extension_common::{
+    CredentialSource, GitCredentialHelper, GitRepo, GitUrl, Interaction, SSHCredentialHelper, Scheme,
+};
 use netrc::Netrc;
 use url::Url;
 use xet_client::error::ClientError;
 use xet_client::hub_client::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper, Operation};
+use xet_runtime::error_printer::ErrorPrinter;
 
+use crate::Result;
 use crate::constants::{
     AUTH_GUIDANCE, HF_ENDPOINT_ENV, HF_HOME_ENV, HF_TOKEN_ENV, HF_TOKEN_PATH_ENV, HUB_HOSTS, LEGACY_HF_TOKEN_ENV,
     SSH_AUTH_GUIDANCE,
 };
-use crate::{GitHfError, Result};
-
-/// Where a [`ResolvedCredential`] came from, for messages. Never includes the secret itself.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CredentialSource {
-    RemoteUrl,
-    /// The environment variable that held the token.
-    Environment(&'static str),
-    TokenFile(PathBuf),
-    Netrc,
-    Ssh,
-    GitCredentialHelper,
-    Anonymous,
-}
-
-impl fmt::Display for CredentialSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RemoteUrl => write!(f, "the token in the remote URL"),
-            Self::Environment(name) => write!(f, "{name}"),
-            Self::TokenFile(path) => write!(f, "the token file {}", path.display()),
-            Self::Netrc => write!(f, ".netrc"),
-            Self::Ssh => write!(f, "SSH authentication"),
-            Self::GitCredentialHelper => write!(f, "the Git credential helper"),
-            Self::Anonymous => write!(f, "no credentials"),
-        }
-    }
-}
 
 /// A credential helper for Hub requests and the source it came from.
 pub struct ResolvedCredential {
@@ -123,9 +105,13 @@ pub fn resolve_credential(
     operation: Operation,
     interaction: Interaction,
 ) -> Result<ResolvedCredential> {
-    let bearer = |token: String, source: CredentialSource, whoami| ResolvedCredential {
-        helper: BearerCredentialHelper::new(token, whoami),
+    let bearer = |token: String, source: CredentialSource| ResolvedCredential {
+        helper: BearerCredentialHelper::new(token),
         source,
+    };
+    let anonymous = || ResolvedCredential {
+        helper: NoopCredentialHelper::new(),
+        source: CredentialSource::Anonymous,
     };
 
     if matches!(remote_url.scheme(), Scheme::Ssh | Scheme::GitSsh) {
@@ -135,43 +121,42 @@ pub fn resolve_credential(
         });
     }
 
-    if let (Some(_user), Some(token)) = remote_url.credential() {
-        return Ok(bearer(token, CredentialSource::RemoteUrl, "url"));
-    }
-    let host_url = remote_url.to_derived_http_host_url()?;
-    if let Some(token) = netrc_token(&host_url) {
-        return Ok(bearer(token, CredentialSource::Netrc, "netrc"));
-    }
-    if let Some(helper) = GitCredentialHelper::new(repo.git_path()?, &host_url, interaction)? {
-        return Ok(ResolvedCredential {
-            helper,
-            source: CredentialSource::GitCredentialHelper,
-        });
+    // Like Git, only HTTP(S) remotes use URL, `.netrc`, and credential helper credentials.
+    if matches!(remote_url.scheme(), Scheme::Http | Scheme::Https) {
+        let username = match remote_url.credential() {
+            (Some(_user), Some(token)) => return Ok(bearer(token, CredentialSource::RemoteUrl)),
+            (username, None) => username,
+            (None, Some(_)) => None,
+        };
+        if let Some(token) = netrc_token(remote_url.host()?, username.as_deref()) {
+            return Ok(bearer(token, CredentialSource::Netrc));
+        }
+        let query_url = remote_url.credential_query_url()?;
+        if let Some(helper) = GitCredentialHelper::new(repo.git_path()?, &query_url, interaction)? {
+            return Ok(ResolvedCredential {
+                helper,
+                source: CredentialSource::GitCredentialHelper,
+            });
+        }
     }
 
-    if matches!(interaction, Interaction::Allowed) {
-        return Err(GitHfError::Auth(format!(
-            "no credentials found for {} on {host_url}; {AUTH_GUIDANCE}",
-            remote_url.full_repo_path()
-        )));
-    }
-    if is_hub_host(&host_url) {
+    if matches!(interaction, Interaction::Never) && remote_url.host().is_ok_and(is_hub_host) {
         // As in huggingface_hub, a blank `HF_TOKEN` falls through to the legacy name.
         for name in [HF_TOKEN_ENV, LEGACY_HF_TOKEN_ENV] {
             if let Some(token) = std::env::var(name).ok().filter(|token| !token.trim().is_empty()) {
-                return Ok(bearer(token.trim().to_owned(), CredentialSource::Environment(name), "env"));
+                return Ok(bearer(token.trim().to_owned(), CredentialSource::Environment(name)));
             }
         }
+        // The token file is only a fallback, so a file that cannot be read is logged and skipped.
         if let Some(path) = token_file_path()
-            && let Some(token) = read_token_file(&path)?
+            && let Ok(Some(token)) =
+                read_token_file(&path).warn_error_fn(|| format!("skipping the token file {}", path.display()))
         {
-            return Ok(bearer(token, CredentialSource::TokenFile(path), "token-file"));
+            return Ok(bearer(token, CredentialSource::TokenFile(path)));
         }
     }
-    Ok(ResolvedCredential {
-        helper: NoopCredentialHelper::new(),
-        source: CredentialSource::Anonymous,
-    })
+
+    Ok(anonymous())
 }
 
 /// The token file `huggingface_hub` uses: `$HF_TOKEN_PATH`, else `$HF_HOME/token`, else
@@ -191,39 +176,34 @@ fn token_file_path() -> Option<PathBuf> {
     Some(expand_tilde(hf_home).join("token"))
 }
 
-// A missing or blank file means no token; other read errors are reported.
-fn read_token_file(path: &Path) -> Result<Option<String>> {
+// A missing or blank file means no token; other read errors are returned.
+fn read_token_file(path: &Path) -> std::io::Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(contents) => Ok(Some(contents.trim().to_owned()).filter(|token| !token.is_empty())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
+        Err(error) => Err(error),
     }
 }
 
-/// Whether `host_url`, such as `https://hf.co`, names a Hub host: one of [`HUB_HOSTS`], or the host
-/// of `HF_ENDPOINT`. As in huggingface_hub, hosts are compared without ports.
-fn is_hub_host(host_url: &str) -> bool {
-    let Some(host) = hostname(host_url) else {
-        return false;
+/// Whether `host` names a Hub host: one of [`HUB_HOSTS`], or the host of `HF_ENDPOINT`, ignoring case.
+/// As in huggingface_hub, hosts are compared without ports.
+fn is_hub_host(host: &str) -> bool {
+    let endpoint_host = || {
+        let endpoint = std::env::var(HF_ENDPOINT_ENV).ok()?;
+        Url::parse(endpoint.trim()).ok()?.host_str().map(str::to_owned)
     };
-    HUB_HOSTS.contains(&host.as_str())
-        || std::env::var(HF_ENDPOINT_ENV).is_ok_and(|endpoint| hostname(endpoint.trim()).as_ref() == Some(&host))
-}
-
-/// The host of a URL such as `https://user@host:port/path`, without user or port, lowercased for
-/// HTTP(S). `None` if `url` doesn't parse or has no host.
-fn hostname(url: &str) -> Option<String> {
-    Url::parse(url).ok()?.host_str().map(str::to_owned)
+    HUB_HOSTS.iter().any(|hub| hub.eq_ignore_ascii_case(host))
+        || endpoint_host().is_some_and(|endpoint| endpoint.eq_ignore_ascii_case(host))
 }
 
 // `.netrc` has no port, so like curl (used by Git) and `requests`, match the hostname alone, ignoring case.
-fn netrc_token(host_url: &str) -> Option<String> {
-    let host = hostname(host_url)?;
+// Like curl, a `username` from the remote URL matches only an entry with that login.
+fn netrc_token(host: &str, username: Option<&str>) -> Option<String> {
     Netrc::new()
         .ok()?
         .hosts
         .into_iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(&host))
+        .find(|(name, auth)| name.eq_ignore_ascii_case(host) && username.is_none_or(|username| auth.login == username))
         .map(|(_, auth)| auth.password)
 }
 
@@ -421,6 +401,89 @@ mod tests {
         Ok(())
     }
 
+    // As in Git, a username in the remote URL selects that user's `.netrc` entry and is passed to the
+    // credential helpers, so a host with several accounts yields the remote's.
+    #[cfg(unix)]
+    #[test]
+    #[serial(env_var_write_read)]
+    fn remote_username_selects_the_account() -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = TestRepo::new("main")?;
+        let _isolation = isolate(&repo)?;
+        let netrc = repo.path().join("netrc");
+        std::fs::write(&netrc, "machine huggingface.co login alice password from-netrc\n")?;
+        let _netrc = EnvVarGuard::set("NETRC", &netrc);
+        let query = repo.path().join("query");
+        let helper = repo.path().join("helper.sh");
+        std::fs::write(&helper, format!("#!/bin/sh\ncat > '{}'\necho password=from-helper\n", query.display()))?;
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))?;
+        let helper = format!("!{}", helper.display());
+        run_git_captured(repo.path(), "config", ["--add", "credential.helper", helper.as_str()])?;
+
+        let alice = "https://alice@huggingface.co/datasets/org/repo";
+        assert_eq!(resolve(&repo, alice, Interaction::Never)?.source(), &CredentialSource::Netrc);
+        let bob = "https://bob@huggingface.co/datasets/org/repo";
+        assert_eq!(resolve(&repo, bob, Interaction::Never)?.source(), &CredentialSource::GitCredentialHelper);
+        let query = std::fs::read_to_string(&query)?;
+        assert!(query.contains("host=huggingface.co\n") && query.contains("username=bob\n"), "{query}");
+        Ok(())
+    }
+
+    // As `git push` does, the credential helpers are asked about the remote URL, path included, so
+    // `credential.useHttpPath` selects a repository's credential. Git drops the path when it is off.
+    #[cfg(unix)]
+    #[test]
+    #[serial(env_var_write_read)]
+    fn credential_query_names_the_repository() -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = TestRepo::new("main")?;
+        let _isolation = isolate(&repo)?;
+        let query = repo.path().join("query");
+        let helper = repo.path().join("helper.sh");
+        std::fs::write(
+            &helper,
+            format!("#!/bin/sh\ncat > '{}'\necho username=user\necho password=from-helper\n", query.display()),
+        )?;
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))?;
+        let helper = format!("!{}", helper.display());
+        run_git_captured(repo.path(), "config", ["--add", "credential.helper", helper.as_str()])?;
+
+        let remote = "https://huggingface.co/datasets/org/repo.git";
+        assert_eq!(resolve(&repo, remote, Interaction::Never)?.source(), &CredentialSource::GitCredentialHelper);
+        assert!(!std::fs::read_to_string(&query)?.contains("path="));
+        run_git_captured(repo.path(), "config", ["credential.useHttpPath", "true"])?;
+        resolve(&repo, remote, Interaction::Never)?;
+        let query = std::fs::read_to_string(&query)?;
+        assert!(query.contains("host=huggingface.co\n") && query.contains("path=datasets/org/repo.git\n"), "{query}");
+        Ok(())
+    }
+
+    // A local remote has no host to authenticate to, so it is anonymous rather than an error. A
+    // `git://` remote, for which Git asks for no credentials, uses no Git sources either.
+    #[test]
+    #[serial(env_var_write_read)]
+    fn local_remotes_have_no_credentials() -> anyhow::Result<()> {
+        let repo = TestRepo::new("main")?;
+        let _isolation = isolate(&repo)?;
+        let _token = EnvVarGuard::set(HF_TOKEN_ENV, "from-env");
+        for url in ["file:///srv/mirror/repo", "/srv/mirror/repo"] {
+            for interaction in [Interaction::Never, Interaction::Allowed] {
+                assert_eq!(resolve(&repo, url, interaction)?.source(), &CredentialSource::Anonymous, "{url}");
+            }
+        }
+
+        let netrc = repo.path().join("netrc");
+        std::fs::write(&netrc, "machine hf.co login user password from-netrc\n")?;
+        let _netrc = EnvVarGuard::set("NETRC", &netrc);
+        let git_url = "git://hf.co/datasets/org/repo";
+        assert_eq!(resolve(&repo, git_url, Interaction::Allowed)?.source(), &CredentialSource::Anonymous);
+        // The clean filter's Hub token still applies to a Hub host.
+        assert_eq!(resolve(&repo, git_url, Interaction::Never)?.source(), &CredentialSource::Environment(HF_TOKEN_ENV));
+        Ok(())
+    }
+
     #[test]
     #[serial(env_var_write_read)]
     fn token_file_follows_huggingface_hub_locations() -> anyhow::Result<()> {
@@ -442,6 +505,9 @@ mod tests {
         assert_eq!(token_file_path(), Some(repo.path().join("explicit")));
         std::fs::write(repo.path().join("explicit"), "\n")?;
         assert_eq!(read_token_file(&repo.path().join("explicit"))?, None);
+        // A token file that cannot be read is skipped, not an error.
+        let _unreadable = EnvVarGuard::set(HF_TOKEN_PATH_ENV, repo.path());
+        assert_eq!(resolve(&repo, REMOTE, Interaction::Never)?.source(), &CredentialSource::Anonymous);
         Ok(())
     }
 
@@ -490,9 +556,9 @@ mod tests {
         let _token_path = EnvVarGuard::set(HF_TOKEN_PATH_ENV, &token_file);
         let _token = EnvVarGuard::set(HF_TOKEN_ENV, "from-env");
 
-        // GIT_TERMINAL_PROMPT=0 stands in for a user who cannot answer the prompt.
-        let error = resolve(&repo, REMOTE, Interaction::Allowed).err().unwrap().to_string();
-        assert!(error.contains("datasets/org/repo") && error.contains("credential helper"), "{error}");
+        // GIT_TERMINAL_PROMPT=0 stands in for a user who cannot answer the prompt. With nothing found,
+        // the request is anonymous, and the server decides whether that is enough.
+        assert_eq!(resolve(&repo, REMOTE, Interaction::Allowed)?.source(), &CredentialSource::Anonymous);
 
         let url_with_token = "https://user:from-url@huggingface.co/datasets/org/repo";
         assert_eq!(resolve(&repo, url_with_token, Interaction::Allowed)?.source(), &CredentialSource::RemoteUrl);
@@ -528,7 +594,7 @@ mod tests {
         let url: GitUrl = REMOTE.parse()?;
         let ctx = XetContext::default()?;
         let token = |source| ResolvedCredential {
-            helper: BearerCredentialHelper::new("hf_secret".into(), "test"),
+            helper: BearerCredentialHelper::new("hf_secret".into()),
             source,
         };
         for (status, source, operation, expected) in [
