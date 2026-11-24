@@ -39,6 +39,7 @@ use netrc::Netrc;
 use url::Url;
 use xet_client::error::ClientError;
 use xet_client::hub_client::{BearerCredentialHelper, CredentialHelper, NoopCredentialHelper, Operation};
+use xet_runtime::error_printer::ErrorPrinter;
 
 use crate::Result;
 use crate::constants::{
@@ -146,8 +147,10 @@ pub fn resolve_credential(
                 return Ok(bearer(token.trim().to_owned(), CredentialSource::Environment(name)));
             }
         }
+        // The token file is only a fallback, so a file that cannot be read is logged and skipped.
         if let Some(path) = token_file_path()
-            && let Some(token) = read_token_file(&path)?
+            && let Ok(Some(token)) =
+                read_token_file(&path).warn_error_fn(|| format!("skipping the token file {}", path.display()))
         {
             return Ok(bearer(token, CredentialSource::TokenFile(path)));
         }
@@ -173,12 +176,12 @@ fn token_file_path() -> Option<PathBuf> {
     Some(expand_tilde(hf_home).join("token"))
 }
 
-// A missing or blank file means no token; other read errors are reported.
-fn read_token_file(path: &Path) -> Result<Option<String>> {
+// A missing or blank file means no token; other read errors are returned.
+fn read_token_file(path: &Path) -> std::io::Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(contents) => Ok(Some(contents.trim().to_owned()).filter(|token| !token.is_empty())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
+        Err(error) => Err(error),
     }
 }
 
@@ -502,6 +505,9 @@ mod tests {
         assert_eq!(token_file_path(), Some(repo.path().join("explicit")));
         std::fs::write(repo.path().join("explicit"), "\n")?;
         assert_eq!(read_token_file(&repo.path().join("explicit"))?, None);
+        // A token file that cannot be read is skipped, not an error.
+        let _unreadable = EnvVarGuard::set(HF_TOKEN_PATH_ENV, repo.path());
+        assert_eq!(resolve(&repo, REMOTE, Interaction::Never)?.source(), &CredentialSource::Anonymous);
         Ok(())
     }
 
