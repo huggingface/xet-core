@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use git_extension_common::process_wrapping::{check_command_output, run_git_captured_with_input_and_output};
 
@@ -19,6 +19,19 @@ pub(crate) fn git_get_all_config_values(wd: &Path, loc_profile: &str, key: &str)
         .split_inclusive(|&byte| byte == 0)
         .map(|value| value.strip_suffix(&[0]).unwrap_or(value).to_vec())
         .collect())
+}
+
+/// Converts a path Git sent as bytes, such as a filter pathname. Git uses UTF-8 paths on non-Unix platforms;
+/// invalid sequences there become U+FFFD.
+pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        PathBuf::from(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(bytes))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+    }
 }
 
 /// Whether Git selects a repository for this directory, following the same rules as `git config --local`.

@@ -70,7 +70,7 @@ impl<'a> SelectingFileCleaner<'a> {
         let hash = MerkleHash::from_hex(&info.hash).map_err(|e| GitHfError::Internal(e.to_string()))?;
         let pointer_hash = HexHash::from_hex(&hash.hex())
             .ok_or_else(|| GitHfError::Internal(format!("file hash {} isn't a pointer hash", info.hash)))?;
-        state.record_file(hash, self.pathname)?;
+        state.record_file(self.pathname)?;
         Ok(XetPointer::new(pointer_hash, size).to_string().into_bytes())
     }
 }

@@ -183,7 +183,7 @@ mod tests {
         flush(wire);
     }
 
-    // Nothing is finalized after an error: no shards or marker, and the session's scratch is gone.
+    // Nothing is finalized after an error: no shards, and the session's scratch is gone.
     // Small inputs never fill a xorb, so no xorb is written either.
     fn assert_nothing_finalized(repo: &git_extension_common::test_utils::TestRepo) -> anyhow::Result<()> {
         let root = git_extension_common::GitRepo::open(repo.path())?
