@@ -527,9 +527,11 @@ impl AdaptiveConcurrencyController {
             .unwrap_or(*config.client.ac_max_reference_transmission_size);
         let target_rtt_secs = config.client.ac_target_rtt.as_secs_f64();
 
-        // If the success ratio is healthy and the predicted RTT is below the target RTT,
-        // then adjust the concurrency upwards.
-        if model_state.recommended_adjustment == 1
+        // If the transfer succeeded, the success ratio is healthy and the predicted RTT is below the target RTT,
+        // then adjust the concurrency upwards.  Increasing on a failure would also reset last_adjustment_time and
+        // skip the decrease below.
+        if transmission_successful
+            && model_state.recommended_adjustment == 1
             && state_lg.bytes_sent_so_far >= self.min_bytes_required_for_adjustment
             && state_lg.completed_transmissions_count >= self.min_completed_transmissions_required_for_adjustment
             && state_lg.last_adjustment_time.elapsed() > self.min_concurrency_increase_delay
@@ -950,6 +952,37 @@ mod tests {
         permit_1.report_completion(0, true).await;
         assert_eq!(controller.total_permits(), 2);
         assert_eq!(controller.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_failures_decrease_concurrency_after_healthy_history() {
+        time::pause();
+
+        let controller = AdaptiveConcurrencyController::new_testing(5, (1, 50));
+
+        // Train the model with successful transfers of varied sizes at 5MB/s, so that the success ratio
+        // recommends an increase and the RTT predictor allows one.
+        let sizes: [u64; 4] = [1 << 20, 2 << 20, 3 << 20, 4 << 20];
+        for i in 0..20 {
+            let permit = controller.acquire_connection_permit().await.unwrap();
+            advance(Duration::from_millis(200 * (1 + i as u64 % 4))).await;
+            permit.report_completion(sizes[i % 4], true).await;
+        }
+        assert_eq!(controller.success_model_state().await.recommended_adjustment, 1);
+
+        // A retryable failure, then a failed completion once retries are exhausted, as RetryWrapper reports them.
+        // Each one must decrease the concurrency even though the success ratio is still healthy.
+        let permit = controller.acquire_connection_permit().await.unwrap();
+        let before = controller.total_permits();
+
+        advance(Duration::from_millis(INCR_SPACING_MS + 1)).await;
+        permit.report_retryable_failure().await;
+        assert_eq!(controller.success_model_state().await.recommended_adjustment, 1);
+        assert_eq!(controller.total_permits(), before - 1);
+
+        advance(Duration::from_millis(INCR_SPACING_MS + 1)).await;
+        permit.report_completion(0, false).await;
+        assert_eq!(controller.total_permits(), before - 2);
     }
 
     #[tokio::test]
