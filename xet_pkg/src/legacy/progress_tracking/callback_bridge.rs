@@ -341,6 +341,7 @@ mod tests {
             total_transfer_bytes_completed,
             total_transfer_bytes_completion_rate: None,
             shard: None,
+            ..Default::default()
         }
     }
 
@@ -349,6 +350,8 @@ mod tests {
             item_name: name.to_string(),
             total_bytes,
             bytes_completed,
+            resume_check_bytes: 0,
+            resume_check_bytes_completed: 0,
         }
     }
 

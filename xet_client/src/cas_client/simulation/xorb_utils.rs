@@ -142,10 +142,20 @@ pub(crate) fn compute_reconstruction_ranges(
         let (byte_start, byte_end) = xorb_footer.get_byte_offset(chunk_range.start, chunk_range.end)?;
         let byte_range = FileRange::new(byte_start as u64, byte_end as u64);
 
+        let original_segment = &file_info.segments[s_idx];
+        let covers_whole_segment = chunk_range.start == original_segment.chunk_index_start
+            && chunk_range.end == original_segment.chunk_index_end;
+        let verification_hash = file_info
+            .verification
+            .get(s_idx)
+            .filter(|_| covers_whole_segment)
+            .map(|v| v.range_hash.into());
+
         terms.push(XorbReconstructionTerm {
             hash: segment.xorb_hash.into(),
             unpacked_length: segment.unpacked_segment_bytes,
             range: chunk_range,
+            verification_hash,
         });
 
         fetch_info_map
