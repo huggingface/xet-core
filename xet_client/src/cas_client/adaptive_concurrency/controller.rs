@@ -105,7 +105,8 @@ impl ConcurrencyControllerState {
     fn update_success(&mut self, is_success: bool, weight: f64) {
         // Update success ratio tracking: 1.0 for success, 0.0 for failure
         let value = if is_success { 1.0 } else { 0.0 };
-        self.success_ratio_tracking.update_with_weight(value, weight);
+        // update_with_weight tracks sum(sample) / sum(weight), so the sample must be scaled by its weight.
+        self.success_ratio_tracking.update_with_weight(value * weight, weight);
     }
 
     /// Internal implementation to extract network model state from a locked state guard.
@@ -1007,6 +1008,28 @@ mod tests {
         // Verify the model was updated
         let latency_state = controller.latency_model_state().await;
         assert!(latency_state.predicted_bandwidth >= 0.0);
+    }
+
+    #[test]
+    fn test_success_ratio_is_weighted_by_report_weight() {
+        let mut state = ConcurrencyControllerState::new_testing(Arc::new(XetConfig::new()));
+
+        // Each transfer sends successful partial reports carrying PARTIAL_REPORT_WEIGHT_RATIO of the weight in total,
+        // then fails on the final report, which carries the rest.
+        for _ in 0..20 {
+            for _ in 0..4 {
+                state.update_success(true, PARTIAL_REPORT_WEIGHT_RATIO / 4.0);
+            }
+            state.update_success(false, 1.0 - PARTIAL_REPORT_WEIGHT_RATIO);
+        }
+
+        let model_state = state.success_model_state();
+        assert!(
+            (model_state.success_ratio - PARTIAL_REPORT_WEIGHT_RATIO).abs() < 0.02,
+            "success_ratio = {}",
+            model_state.success_ratio
+        );
+        assert_eq!(model_state.recommended_adjustment, -1);
     }
 
     #[test]
