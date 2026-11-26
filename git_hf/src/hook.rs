@@ -83,10 +83,18 @@ fn is_owned(content: &[u8]) -> bool {
         .any(|line| line.starts_with(HOOK_MARKER.as_bytes()))
 }
 
+/// Whether a line that is not a shell comment calls git-hf's pre-push. A commented-out call or a
+/// note mentioning it runs nothing, so it does not count. The call may follow other commands on its
+/// line, such as `printf '%s\n' "$input" |`.
 fn calls_git_hf(content: &[u8]) -> bool {
-    [&b"git-hf pre-push"[..], b"git hf pre-push"]
-        .iter()
-        .any(|command| content.windows(command.len()).any(|w| w == *command))
+    content
+        .split(|&b| b == b'\n')
+        .filter(|line| !line.trim_ascii_start().starts_with(b"#"))
+        .any(|line| {
+            [&b"git-hf pre-push"[..], b"git hf pre-push"]
+                .iter()
+                .any(|command| line.windows(command.len()).any(|w| w == *command))
+        })
 }
 
 /// Ensures pushes from the repository containing `wd` run git-hf: installs the git-hf hook unless
@@ -206,9 +214,20 @@ mod tests {
         assert_eq!(fs::read_to_string(dir.join(HOOK))?, foreign);
 
         // A hook that already calls git-hf needs nothing more.
-        for command in ["git-hf pre-push \"$@\"", "git hf pre-push \"$1\" \"$2\""] {
+        for command in [
+            "git-hf pre-push \"$@\"",
+            "git hf pre-push \"$1\" \"$2\"",
+            "printf '%s\\n' \"$input\" | git-hf pre-push \"$@\" || exit 1",
+        ] {
             fs::write(dir.join(HOOK), format!("#!/bin/sh\nnpm test\n{command}\n"))?;
             assert_eq!(ensure_installed(repo.path())?, InstallOutcome::AlreadyInstalled);
+        }
+        // A commented-out call or a note mentioning the command runs nothing.
+        for comment in ["# git-hf pre-push \"$@\"", "  # add: git hf pre-push \"$@\""] {
+            let hook = format!("#!/bin/sh\nnpm test\n{comment}\n");
+            fs::write(dir.join(HOOK), &hook)?;
+            assert_eq!(ensure_installed(repo.path())?, InstallOutcome::ForeignHook(dir.join(HOOK)));
+            assert_eq!(fs::read_to_string(dir.join(HOOK))?, hook);
         }
         Ok(())
     }
