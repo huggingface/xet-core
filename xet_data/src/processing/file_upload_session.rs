@@ -8,7 +8,7 @@ use std::mem::{swap, take};
 #[cfg(not(target_family = "wasm"))]
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as stdMutex};
+use std::sync::{Arc, Mutex as StdMutex};
 
 #[cfg(not(target_family = "wasm"))]
 use bytes::Bytes;
@@ -90,7 +90,7 @@ pub struct FileUploadSession {
     /// writing file info for a cut xorb. Other files can dedup against a xorb before its upload
     /// finishes, and a cut can hold other files' data, so finalize returns this error even if the
     /// file that hit it was abandoned.
-    upload_error: stdMutex<Option<Arc<DataError>>>,
+    upload_error: StdMutex<Option<Arc<DataError>>>,
 
     /// Session start, for the telemetry `duration_ms` and `ingest_ms`.
     #[cfg(not(target_family = "wasm"))]
@@ -186,7 +186,7 @@ impl FileUploadSession {
             deduplication_metrics: Mutex::new(DeduplicationMetrics::default()),
             xorb_upload_tasks: Mutex::new(JoinSet::new()),
             finalized: AtomicBool::new(false),
-            upload_error: stdMutex::new(None),
+            upload_error: StdMutex::new(None),
             #[cfg(not(target_family = "wasm"))]
             started_at: std::time::Instant::now(),
         });
