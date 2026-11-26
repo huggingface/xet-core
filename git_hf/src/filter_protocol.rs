@@ -4,6 +4,12 @@ use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const MAX_PACKET: usize = 65520;
+/// Limit on the number of header lines in one message, bounding their memory to this many packets. Git
+/// sends at most six per request (`convert.c`: command, pathname, ref, treeish, blob, can-delay) and a
+/// few more in the handshake; the rest is room for new ones.
+const MAX_HEADERS: usize = 16;
+/// Size of the buffer used to read file content.
+pub(crate) const READ_CHUNK_SIZE: usize = 64 * 1024;
 
 pub(crate) enum Packet {
     Data(Vec<u8>),
@@ -56,15 +62,13 @@ pub(crate) async fn flush_packet(output: &mut (impl AsyncWrite + Unpin)) -> io::
 
 pub(crate) async fn headers(input: &mut (impl AsyncRead + Unpin)) -> io::Result<Option<Vec<Vec<u8>>>> {
     let mut lines = Vec::new();
-    let mut size = 0;
     loop {
         match read_packet(input).await? {
             Packet::Eof if lines.is_empty() => return Ok(None),
             Packet::Eof => return Err(invalid("EOF inside headers")),
             Packet::Flush => return Ok(Some(lines)),
             Packet::Data(mut data) => {
-                size += data.len() + 4;
-                if size > 65536 {
+                if lines.len() == MAX_HEADERS {
                     return Err(invalid("Too many filter headers"));
                 }
                 if data.last() == Some(&b'\n') {
@@ -118,9 +122,9 @@ impl<'a, R: AsyncRead + Unpin> Content<'a, R> {
 
     /// Appends content to `buffer` until it holds `limit` bytes or the content ends.
     pub(crate) async fn read_up_to(&mut self, buffer: &mut Vec<u8>, limit: usize) -> io::Result<()> {
-        let mut chunk = vec![0; 65536];
+        let mut chunk = vec![0; READ_CHUNK_SIZE];
         while buffer.len() < limit {
-            let n = self.read(&mut chunk[..(limit - buffer.len()).min(65536)]).await?;
+            let n = self.read(&mut chunk[..(limit - buffer.len()).min(READ_CHUNK_SIZE)]).await?;
             if n == 0 {
                 break;
             }
@@ -131,7 +135,7 @@ impl<'a, R: AsyncRead + Unpin> Content<'a, R> {
 
     /// Reads and discards the rest of the content.
     pub(crate) async fn drain(&mut self) -> io::Result<()> {
-        let mut chunk = vec![0; 65536];
+        let mut chunk = vec![0; READ_CHUNK_SIZE];
         while self.read(&mut chunk).await? > 0 {}
         Ok(())
     }

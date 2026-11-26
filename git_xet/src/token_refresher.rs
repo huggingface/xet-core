@@ -25,7 +25,7 @@ pub fn new_git_token_refresher(
         Some(r) => r,
         None => repo.remote_url()?,
     };
-    let cred_helper = get_credential(repo, &remote_url, operation)?;
+    let (cred_helper, _) = get_credential(repo, &remote_url, operation)?;
     let client = build_http_client(ctx, session_id, None, custom_headers)?;
     Ok(DirectRefreshRouteTokenRefresher::new(
         ctx.clone(),

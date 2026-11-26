@@ -1,4 +1,4 @@
-crate::config_group!({
+crate::config::macros::xet_config_group!(deduplication, {
     /// Number of ranges to use when estimating fragmentation
     ///
     /// The default value is 128.
