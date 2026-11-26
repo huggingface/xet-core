@@ -20,9 +20,9 @@ colored = { workspace = true }
 const-str = { workspace = true }
 dirs = { workspace = true }
 humantime = { workspace = true }
-git-version = { workspace = true }
 konst = { workspace = true }
 libc = { workspace = true }
+pastey = { workspace = true }
 more-asserts = { workspace = true }
 oneshot = { workspace = true }
 rand = { workspace = true }

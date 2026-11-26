@@ -246,6 +246,28 @@ When adding or modifying code in the wasm-reachable crates, please keep the wasm
 
 See `api_changes/update_260515_wasm_target_support.md` for the full set of wasm-only differences and the patterns wasm-reachable code must follow. The example browser pages live at `wasm/hf_xet_wasm/examples/download.html` and `wasm/hf_xet_wasm/examples/upload.html`.
 
+### Developing with Nix
+
+If you use Nix run `nix develop` to enter the development shell defined in `flake.nix`. It provides
+all tools required to build and test Rust and Python packages along with some useful aliases.
+
+```bash
+# Entering the devshell
+nix develop
+
+cargo build     # build Rust crates
+cargo test      # test Rust crates
+cargo bench     # run benchmarks
+fmt             # run nightly fmt with --manifest-path ./Cargo.toml --all flags
+clippy          # run clippy with -r --verbose -- -D warnings
+build-python    # build hf_xet Python Package into local .venv
+test-python     # run integration tests with freshly built hf_xet package
+
+# you can also interact with it with ipython
+ipython
+In [1]: import hf_xet
+```
+
 ## References & History
 
 * [Technical Blog posts](https://xethub.com/)

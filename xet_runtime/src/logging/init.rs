@@ -67,8 +67,7 @@ pub fn init(cfg: LoggingConfig) {
         init_logging_to_console(&cfg);
     }
 
-    // Log the version information.
-    info!("{}, xet-core revision {}", &cfg.version, git_version::git_version!(fallback = "unknown"));
+    info!("{}, xet-core version {}", &cfg.version, env!("CARGO_PKG_VERSION"));
 
     // Log the memory-derived download buffer defaults. This must happen after the
     // subscriber is installed: the values themselves are typically computed while

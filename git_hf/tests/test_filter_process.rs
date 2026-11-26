@@ -89,7 +89,7 @@ fn git_add_checkout_and_staged_reconstruction() -> Result<()> {
 
 /// Git writes the index before closing the filter and ignores its exit status, so a failed
 /// finalization cannot fail `git add`. Staging is shared by linked worktrees, so the message names
-/// the worktree whose relative paths need re-adding, and the marker lists the unbacked hashes.
+/// the worktree whose relative paths need re-adding, and the files to stage again.
 #[cfg(unix)]
 #[test]
 #[serial(env_var_write_read)]
@@ -128,17 +128,15 @@ fn finalize_failure_is_reported_and_recoverable_per_worktree() -> Result<()> {
 
     let (_, stderr) = run_git_captured_with_input_and_output(&linked, "add", ["large"])?.wait_with_output()?;
     let stderr = String::from_utf8_lossy(&stderr);
-    assert!(stderr.contains("--renormalize"), "{stderr}");
+    assert!(stderr.contains(&format!("to {}: ", root.display())), "{stderr}");
+    assert!(stderr.contains("--renormalize") && stderr.contains("rejects pushes"), "{stderr}");
+    assert!(stderr.contains("/linked/ are staged") && stderr.contains("\n  large\n"), "{stderr}");
     let (blob, _) = run_git_captured_with_input_and_output(&linked, "show", [":large"])?.wait_with_output()?;
     let linked_pointer = XetPointer::parse(&blob)?.unwrap();
     assert_ne!(linked_pointer.hash, main_pointer.hash);
     assert_eq!(fs::read_dir(root.join("shards"))?.count(), shards_before);
 
-    let markers = fs::read_dir(root.join("finalize-failed"))?.collect::<std::io::Result<Vec<_>>>()?;
-    assert_eq!(markers.len(), 1);
-    assert_eq!(fs::read_to_string(markers[0].path())?, format!("{}\n", linked_pointer.hash));
-
-    // Recovery happens in the recorded worktree and stages that worktree's content.
+    // Recovery happens in the reported worktree and stages that worktree's content.
     fs::set_permissions(&xorbs, fs::Permissions::from_mode(0o755))?;
     run_git_captured(&linked, "add", ["--renormalize", "large"])?;
     let mut staged = false;
