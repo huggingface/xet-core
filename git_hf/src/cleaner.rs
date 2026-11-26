@@ -4,7 +4,7 @@ use xet_core_structures::merklehash::MerkleHash;
 use xet_data::processing::Sha256Policy;
 
 use crate::clean_session::CleanSession;
-use crate::filter_protocol::Content;
+use crate::filter_protocol::{Content, READ_CHUNK_SIZE};
 use crate::selection::{BINARY_LIMIT, BINARY_SAMPLE_SIZE, FILE_LIMIT, TEXT_LIMIT, is_binary};
 use crate::{GitHfError, HexHash, MAX_POINTER_SIZE, PointerError, Result, XetPointer};
 
@@ -54,7 +54,7 @@ impl<'a> SelectingFileCleaner<'a> {
         cleaner.add_data(&prefix).await?;
         let mut size = prefix.len() as u64;
         drop(prefix);
-        let mut buffer = vec![0; 65536];
+        let mut buffer = vec![0; READ_CHUNK_SIZE];
         loop {
             let n = input.read(&mut buffer).await?;
             if n == 0 {
@@ -62,7 +62,7 @@ impl<'a> SelectingFileCleaner<'a> {
             }
             size += n as u64;
             if size > FILE_LIMIT {
-                return Err(GitHfError::NotSupported("File exceeds 500 GB".into()));
+                return Err(GitHfError::NotSupported(format!("File exceeds {} GB", FILE_LIMIT / 1_000_000_000)));
             }
             cleaner.add_data(&buffer[..n]).await?;
         }

@@ -150,7 +150,6 @@ impl CleanSession {
             None => (None, TranslatorConfig::memory_config(&self.ctx, scratch.path())?),
         };
         config.shard_session_directory = scratch.path().join("session");
-        config.force_disable_progress_aggregation = true;
         let client = StagingClient::new(self.ctx.clone(), &base, remote)?;
         let dedup = StagedDedupSource::new(&self.ctx, &base.join("shards")).await?;
         let session = FileUploadSession::new_with_client(
@@ -358,7 +357,7 @@ mod tests {
         let data = vec![b'a'; TEXT_LIMIT + 1];
         let result = cleaner.clean(&data)?;
         assert_eq!(XetPointer::parse(&result)?.unwrap().size, data.len() as u64);
-        let root = GitRepo::open(repo.path())?.common_dir()?.join("xet/staging");
+        let root = staging_root(&cleaner)?;
         // The remaining partial xorb is written at finalization. Make that destination unwritable.
         fs::rename(root.join("xorbs"), root.join("saved-xorbs"))?;
         fs::write(root.join("xorbs"), b"not a directory")?;
@@ -419,8 +418,7 @@ mod tests {
             let out = cleaner.clean(&data)?;
             hashes.push(pointer_hash(&out)?);
         }
-        let stage = GitRepo::open(repo.path())?.common_dir()?.join("xet/staging");
-        let root = stage.clone();
+        let root = staging_root(&cleaner)?;
         assert_eq!(fs::read_dir(root.join("shards"))?.count(), 0);
         cleaner.finish_blocking()?;
         assert_eq!(fs::read_dir(root.join("xorbs"))?.count(), 1);
@@ -439,7 +437,7 @@ mod tests {
         data[1] = 17;
         second.clean(&data)?;
         second.finish_blocking()?;
-        assert_eq!(fs::read_dir(stage)?.count(), 2);
+        assert_eq!(fs::read_dir(&root)?.count(), 2);
         assert_eq!(fs::read_dir(root.join("xorbs"))?.count(), 2);
         Ok(())
     }

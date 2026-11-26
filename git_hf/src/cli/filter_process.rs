@@ -4,7 +4,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
 use crate::clean_session::CleanSession;
 use crate::cleaner::SelectingFileCleaner;
-use crate::filter_protocol::{Content, flush_packet, headers, write_data};
+use crate::filter_protocol::{Content, READ_CHUNK_SIZE, flush_packet, headers, write_data};
 use crate::{GitHfError, Result};
 
 fn protocol(message: &str) -> GitHfError {
@@ -119,7 +119,7 @@ async fn serve_requests(
 }
 
 async fn copy_content(content: &mut Content<'_, impl AsyncRead + Unpin>, response: &mut impl Write) -> Result<()> {
-    let mut buffer = vec![0; 65536];
+    let mut buffer = vec![0; READ_CHUNK_SIZE];
     loop {
         let n = content.read(&mut buffer).await?;
         if n == 0 {

@@ -211,7 +211,6 @@ fn netrc_token(host: &str, username: Option<&str>) -> Option<String> {
 mod tests {
     use std::io::Write;
     use std::net::TcpListener;
-    use std::time::{Duration, Instant};
 
     use git_extension_common::process_wrapping::{run_git_captured, run_git_captured_with_input_and_output};
     use git_extension_common::test_utils::TestRepo;
@@ -518,6 +517,7 @@ mod tests {
     #[serial(env_var_write_read)]
     fn non_interactive_never_prompts_or_blocks() -> anyhow::Result<()> {
         use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
 
         let repo = TestRepo::new("main")?;
         let _isolation = isolate(&repo)?;
