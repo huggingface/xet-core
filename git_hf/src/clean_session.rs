@@ -41,8 +41,9 @@ pub(crate) struct CleanSessionState {
     // Where finalization writes staged data; named when it fails.
     staging: PathBuf,
     worktree: PathBuf,
-    // Push must not remove staged shards this session's dedup may still read.
-    _staging_lock: File,
+    // Push must not remove staged shards this session's dedup may still read; `None` if the filesystem
+    // has no file locks.
+    _staging_lock: Option<File>,
 }
 
 impl CleanSessionState {
@@ -93,7 +94,7 @@ impl CleanSession {
 
     async fn create_state(&self) -> Result<Arc<CleanSessionState>> {
         // The repository handle isn't Sync, so it is dropped before the first await.
-        let (worktree, base, scratch, remote, staging_lock) = {
+        let (worktree, staging, scratch, remote, staging_lock) = {
             let repo = GitRepo::open_from_cur_dir()?;
             let worktree = repo
                 .worktree_dir()?
@@ -112,16 +113,24 @@ impl CleanSession {
                     )
                 },
             }
-            let base = staging_dir(&repo)?;
-            let staging_lock = lock_shared(&base)?;
-            let scratch = tempfile::Builder::new().prefix("session-").tempdir_in(&base)?;
+            let staging = staging_dir(&repo)?;
+            let staging_lock = lock_shared(&staging)?;
+            if staging_lock.is_none() {
+                eprintln!(
+                    "{GIT_HF_PROGRAM}: {} does not support file locks; continuing without one, so pushes will \
+                     leave uploaded data staged. To free space, delete that directory once every commit is \
+                     pushed, no worktree has staged changes, and no `git add` is running.",
+                    staging.display()
+                );
+            }
+            let scratch = tempfile::Builder::new().prefix("session-").tempdir_in(&staging)?;
             // Resolved outside the time budget below, which cannot interrupt blocking calls. Lookups
             // never prompt and bound themselves: 2 s for a credential helper, a connect timeout for SSH.
             let remote = repo.remote_url().ok().and_then(|url| {
                 let credential = resolve_credential(&repo, &url, Operation::Download, Interaction::Never).ok()?;
                 Some((url, repo.branch_name().ok()?, credential.helper()))
             });
-            (worktree, base, scratch, remote, staging_lock)
+            (worktree, staging, scratch, remote, staging_lock)
         };
         let id = scratch.path().file_name().unwrap().to_string_lossy().into_owned();
         let remote = match remote {
@@ -139,8 +148,8 @@ impl CleanSession {
             None => (None, TranslatorConfig::memory_config(&self.ctx, scratch.path())?),
         };
         config.shard_session_directory = scratch.path().join("session");
-        let client = StagingClient::new(self.ctx.clone(), &base, remote)?;
-        let dedup = StagedDedupSource::new(&self.ctx, &base.join("shards")).await?;
+        let client = StagingClient::new(self.ctx.clone(), &staging, remote)?;
+        let dedup = StagedDedupSource::new(&self.ctx, &staging.join("shards")).await?;
         let session = FileUploadSession::new_with_client(
             Arc::new(config),
             client,
@@ -153,7 +162,7 @@ impl CleanSession {
             dedup,
             files: Mutex::new(Vec::new()),
             _scratch: scratch,
-            staging: base,
+            staging,
             worktree,
             _staging_lock: staging_lock,
         }))

@@ -9,8 +9,10 @@
 //! error. File records may also reference xorbs absent from every table; those came from remote
 //! dedup data or were already uploaded, and are left to the server.
 //!
-//! Only push removes staged objects, under the exclusive [`lock_exclusive`]. Clean sessions hold
-//! [`lock_shared`] for their lifetime, because their dedup reads staged shards at any point.
+//! Only push removes staged objects, under the exclusive [`try_lock_exclusive`]. Clean sessions hold
+//! [`lock_shared`] for their lifetime, because their dedup reads staged shards at any point. On a
+//! filesystem without file locks, such as Lustre without `flock` or NFS without a lock manager, clean
+//! runs unlocked and push fails to lock, so push never removes staged objects there.
 use std::fs::File;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -57,11 +59,26 @@ fn open_lock(staging: &Path) -> std::io::Result<File> {
         .open(staging.join(LOCK_FILE))
 }
 
-/// Keeps staged objects from being removed until the returned file is closed.
-pub(crate) fn lock_shared(staging: &Path) -> std::io::Result<File> {
+/// Whether `error` means the filesystem does not support file locks. `ENOSYS` and `EOPNOTSUPP` (and
+/// their Windows counterparts) map to [`std::io::ErrorKind::Unsupported`]; `ENOLCK`, from NFS without
+/// a lock manager, has no stable kind.
+fn is_unsupported_lock(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(libc::ENOLCK) {
+        return true;
+    }
+    error.kind() == std::io::ErrorKind::Unsupported
+}
+
+/// Keeps staged objects from being removed until the returned file is closed. Returns `None` if the
+/// filesystem does not support file locks; push then cannot lock either, so it removes nothing.
+pub(crate) fn lock_shared(staging: &Path) -> std::io::Result<Option<File>> {
     let file = open_lock(staging)?;
-    file.lock_shared()?;
-    Ok(file)
+    match file.lock_shared() {
+        Ok(()) => Ok(Some(file)),
+        Err(error) if is_unsupported_lock(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Excludes clean sessions until the returned file is closed, or returns `None` while one is running.
@@ -571,5 +588,19 @@ mod tests {
         );
         assert!(client.offline.load(Ordering::Relaxed));
         Ok(())
+    }
+
+    // Only errors meaning the filesystem has no file locks fall back to running unlocked.
+    #[test]
+    fn unsupported_lock_errors() {
+        use std::io::{Error, ErrorKind};
+
+        assert!(is_unsupported_lock(&Error::from(ErrorKind::Unsupported)));
+        #[cfg(unix)]
+        for code in [libc::ENOSYS, libc::EOPNOTSUPP, libc::ENOLCK] {
+            assert!(is_unsupported_lock(&Error::from_raw_os_error(code)), "{code}");
+        }
+        assert!(!is_unsupported_lock(&Error::from(ErrorKind::PermissionDenied)));
+        assert!(!is_unsupported_lock(&Error::from(ErrorKind::WouldBlock)));
     }
 }
