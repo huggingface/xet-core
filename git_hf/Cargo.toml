@@ -27,6 +27,9 @@ xet-data = { path = "../xet_data" }
 xet-runtime = { path = "../xet_runtime" }
 xet_pointer_file = { path = "../xet_pointer_file" }
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 anyhow = { workspace = true }
 git_extension_common = { path = "../git_extension_common", features = ["test-utils"] }

@@ -45,19 +45,46 @@ impl GitUrl {
     /// masked entirely, since it may be a token. SCP-like `user@host:path` URLs carry no secret.
     pub fn redacted(&self) -> String {
         let raw = self._raw.as_str();
-        let Some(authority_start) = raw.find("://").map(|i| i + 3) else {
+        let Some((start, at)) = self.userinfo_bounds() else {
             return raw.to_owned();
         };
-        let authority_end = raw[authority_start..].find('/').map_or(raw.len(), |i| authority_start + i);
-        let Some(at) = raw[authority_start..authority_end].rfind('@').map(|i| authority_start + i) else {
-            return raw.to_owned();
-        };
-        let userinfo = &raw[authority_start..at];
-        let masked = match userinfo.split_once(':') {
+        let masked = match raw[start..at].split_once(':') {
             Some((user, _)) => format!("{user}:***"),
             None => "***".to_owned(),
         };
-        format!("{}{masked}{}", &raw[..authority_start], &raw[at..])
+        format!("{}{masked}{}", &raw[..start], &raw[at..])
+    }
+
+    /// The URL `git push` asks Git's credential helpers about: the URL as given, without any password.
+    /// Git passes on its username, and its path when `credential.useHttpPath` is set, which selects a
+    /// repository's credential. Git asks credential helpers only for HTTP(S) remotes, so other remotes
+    /// are an error.
+    pub fn credential_query_url(&self) -> Result<String> {
+        if !matches!(self.inner.scheme, Scheme::Http | Scheme::Https) {
+            return Err(GitExtensionError::not_supported(format!(
+                "Git asks credential helpers only for HTTP(S) remotes, not {}",
+                self.redacted()
+            )));
+        }
+        let raw = self._raw.as_str();
+        let Some((start, at)) = self.userinfo_bounds() else {
+            return Ok(raw.to_owned());
+        };
+        Ok(match raw[start..at].split_once(':') {
+            Some(("", _)) => format!("{}{}", &raw[..start], &raw[at + 1..]),
+            Some((user, _)) => format!("{}{user}{}", &raw[..start], &raw[at..]),
+            None => raw.to_owned(),
+        })
+    }
+
+    // The byte range of the user-info in `scheme://user-info@host/...`: its start, and the index of the `@`
+    // that ends it. `None` without a scheme or user-info.
+    fn userinfo_bounds(&self) -> Option<(usize, usize)> {
+        let raw = self._raw.as_str();
+        let start = raw.find("://")? + 3;
+        let end = raw[start..].find('/').map_or(raw.len(), |i| start + i);
+        let at = start + raw[start..end].rfind('@')?;
+        Some((start, at))
     }
 
     // Determine the LFS server endpoint from Git remote URL according to
@@ -208,6 +235,14 @@ impl GitUrl {
         Ok(format!("{auth_str}{host}"))
     }
 
+    /// The remote's host name, lowercased, without user-info or port.
+    pub fn host(&self) -> Result<&str> {
+        self.inner
+            .host
+            .as_deref()
+            .ok_or_else(|| GitExtensionError::config_error("remote URL missing host name"))
+    }
+
     pub fn port(&self) -> Option<u16> {
         self.inner.port
     }
@@ -253,6 +288,37 @@ mod test_redaction {
             assert_eq!(parsed.redacted(), expected);
             assert!(!format!("{parsed:?}").contains("hf_secret"));
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test_credential_query {
+    use super::GitUrl;
+    use crate::errors::Result;
+
+    #[test]
+    fn credential_query_url_keeps_user_and_path_without_secrets() -> Result<()> {
+        for (url, expected) in [
+            ("https://huggingface.co/datasets/a/b.git", "https://huggingface.co/datasets/a/b.git"),
+            ("https://bob@huggingface.co:8443/a/b", "https://bob@huggingface.co:8443/a/b"),
+            ("https://bob:hf_secret@huggingface.co/a/b", "https://bob@huggingface.co/a/b"),
+            ("https://:hf_secret@huggingface.co/a/b", "https://huggingface.co/a/b"),
+        ] {
+            let parsed: GitUrl = url.parse()?;
+            assert_eq!(parsed.credential_query_url()?, expected, "{url}");
+        }
+        for url in [
+            "ssh://git@hf.co/a/b",
+            "git@hf.co:a/b",
+            "git://hf.co/a/b",
+            "file:///srv/a/b",
+        ] {
+            let parsed: GitUrl = url.parse()?;
+            assert!(parsed.credential_query_url().is_err(), "{url}");
+        }
+        let parsed: GitUrl = "https://bob@Hub.Example.com:8443/a/b".parse()?;
+        assert_eq!(parsed.host()?, "hub.example.com");
         Ok(())
     }
 }

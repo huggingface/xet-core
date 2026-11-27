@@ -35,7 +35,7 @@ pub async fn migrate_with_external_runtime(
     repo_type: &str,
     repo_id: &str,
 ) -> Result<()> {
-    let cred_helper = BearerCredentialHelper::new(hub_token.to_owned(), "");
+    let cred_helper = BearerCredentialHelper::new(hub_token.to_owned());
     let mut headers = header::HeaderMap::new();
     headers.insert(header::USER_AGENT, header::HeaderValue::from_static(USER_AGENT));
     let ctx = XetContext::default()?;

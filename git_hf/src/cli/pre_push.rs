@@ -10,6 +10,7 @@ use xet_runtime::utils::UniqueId;
 use crate::auth::resolve_credential;
 use crate::constants::GIT_HF_PROGRAM;
 use crate::push::{parse_updates, plan_push, release_uploaded, token_reference, upload};
+use crate::staging::staging_dir;
 use crate::{GitHfError, Result, cas_token};
 
 /// Uploads the staged data newly referenced by the pushed refs and removes it from staging.
@@ -22,7 +23,7 @@ pub(super) fn run(_remote: &str, location: &OsStr) -> Result<()> {
 
     let updates = parse_updates(&input)?;
     let repo = GitRepo::open(&wd)?;
-    let staging = repo.common_dir()?.join("xet").join("staging");
+    let staging = staging_dir(&repo)?;
     // Nothing to upload: allow the push to any remote, including non-Hub ones such as a mirror.
     let Some(plan) = plan_push(&wd, &staging, &updates)? else {
         return Ok(());

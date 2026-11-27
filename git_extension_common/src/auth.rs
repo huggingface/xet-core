@@ -8,9 +8,11 @@
 //!   and https://github.com/git-lfs/git-lfs/blob/463ed9727d21155585721489fdb8cc81030f979b/lfshttp/ssh.go#L76
 //!   for details of this command. The HF Xet CAS token API on HF Hub accepts this type of authorization.
 mod git;
+mod source;
 mod ssh;
 
 pub use git::GitCredentialHelper;
+pub use source::CredentialSource;
 pub use ssh::SSHCredentialHelper;
 #[cfg(any(test, feature = "test-utils"))]
 pub use ssh::{GitLFSAuthentationResponseHeader, GitLFSAuthenticateResponse};
