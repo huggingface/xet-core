@@ -11,7 +11,7 @@ pub enum GitHfError {
     #[error("Invalid filter protocol: {0}")]
     FilterProtocol(String),
 
-    #[error("Cleaning failed: {0}")]
+    #[error("Data processing error: {0}")]
     Data(#[from] xet_data::DataError),
 
     #[error("Runtime error: {0}")]
