@@ -25,6 +25,22 @@ use crate::progress_tracking::ItemProgressUpdater;
 
 type RawFetchedFileTerms = Result<Option<(Vec<FileTerm>, u64, u64)>>;
 
+/// Returns the end of a reconstruction block that would end at `block_end`, extended to `requested_end` when
+/// the bytes left after it are less than half of `block_size`.
+///
+/// This avoids a short final query without folding a large tail into the block: the first block's query is
+/// what a stream waits on before its first byte, and its cost grows with the number of terms it covers. With
+/// the default 256 MB block, a 488 MB file is queried as 256 MB + 232 MB rather than as one 488 MB block.
+/// When the requested range is open-ended (`u64::MAX`), the block is never extended.
+fn end_with_short_tail_merged(block_end: u64, block_size: u64, requested_end: u64) -> u64 {
+    let remaining = requested_end.saturating_sub(block_end);
+    if remaining < block_size / 2 {
+        requested_end
+    } else {
+        block_end
+    }
+}
+
 /// Manages the iteration over file terms during reconstruction, with adaptive prefetching.
 /// Prefetches reconstruction blocks ahead of consumption based on observed completion rates
 /// to minimize download latency while controlling memory usage.
@@ -257,11 +273,8 @@ impl ReconstructionTermManager {
             prefetch_block_range.end = last_byte_position;
         }
 
-        // Check if we should extend this one to the end.
-        let min_fetch_size = self.config.min_reconstruction_fetch_size.as_u64();
-        if prefetch_block_range.end + min_fetch_size > self.requested_byte_range.end {
-            prefetch_block_range.end = self.requested_byte_range.end;
-        }
+        prefetch_block_range.end =
+            end_with_short_tail_merged(prefetch_block_range.end, block_size, self.requested_byte_range.end);
 
         // It's possible that the start is at or past the end of the requested range; in that case, do nothing.
         // This also handles empty files where start >= end.
@@ -326,5 +339,72 @@ impl ReconstructionTermManager {
         self.prefetch_queue.push_back(jh);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use xet_client::cas_client::{ClientTestingUtils, LocalClient};
+    use xet_runtime::utils::ByteSize;
+
+    use super::*;
+
+    const TEST_CHUNK_SIZE: usize = 101;
+
+    #[test]
+    fn test_short_tail_is_merged() {
+        // 232 left after a 256 block: at least half a block, so the block is not extended.
+        assert_eq!(end_with_short_tail_merged(256, 256, 488), 256);
+        // 127 left: less than half a block, so the block runs to the end.
+        assert_eq!(end_with_short_tail_merged(256, 256, 383), 383);
+        // Exactly half a block left is not merged.
+        assert_eq!(end_with_short_tail_merged(256, 256, 384), 256);
+        // A block already clamped to the end stays there.
+        assert_eq!(end_with_short_tail_merged(488, 512, 488), 488);
+        // An open-ended request is never extended.
+        assert_eq!(end_with_short_tail_merged(256, 256, u64::MAX), 256);
+    }
+
+    /// Returns the byte range of each block of terms the manager produces for the whole file.
+    async fn block_ranges(term_spec: &[(u64, (u64, u64))], min_fetch_size: &'static str) -> (u64, Vec<FileRange>) {
+        let ctx = XetContext::default().unwrap();
+        let client = LocalClient::temporary(ctx.clone()).await.unwrap();
+        let file_contents = client.upload_random_file(term_spec, TEST_CHUNK_SIZE).await.unwrap();
+        let file_len = file_contents.data.len() as u64;
+
+        let mut config = ReconstructionConfig::default();
+        config.min_reconstruction_fetch_size = ByteSize::from(min_fetch_size);
+        let mut manager = ReconstructionTermManager::new(
+            ctx,
+            Arc::new(config),
+            client,
+            file_contents.file_hash,
+            FileRange::new(0, file_len),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let mut ranges = Vec::new();
+        while let Some(terms) = manager.next_file_terms().await.unwrap() {
+            ranges.push(FileRange::new(terms.first().unwrap().byte_range.start, terms.last().unwrap().byte_range.end));
+        }
+        (file_len, ranges)
+    }
+
+    #[tokio::test]
+    async fn test_long_tail_gets_its_own_query() {
+        // 18 chunks of 101 bytes: after a 1000-byte first block, 818 bytes remain, more than half a block.
+        let (file_len, ranges) = block_ranges(&[(1, (0, 18))], "1000").await;
+        assert_eq!(file_len, 1818);
+        assert_eq!(ranges, vec![FileRange::new(0, 1000), FileRange::new(1000, 1818)]);
+    }
+
+    #[tokio::test]
+    async fn test_short_tail_joins_the_first_query() {
+        // 14 chunks of 101 bytes: after a 1000-byte first block, 414 bytes remain, less than half a block.
+        let (file_len, ranges) = block_ranges(&[(1, (0, 14))], "1000").await;
+        assert_eq!(file_len, 1414);
+        assert_eq!(ranges, vec![FileRange::new(0, 1414)]);
     }
 }
