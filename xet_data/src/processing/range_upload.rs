@@ -679,7 +679,7 @@ mod tests {
         let session = FileDownloadSession::new(config.clone(), None).await.unwrap();
         let file_info = crate::processing::XetFileInfo::new(composed_hash.hex(), total_size);
         let out_path = base_dir.path().join("output");
-        session.download_file(&file_info, &out_path).await.unwrap();
+        session.download_file(&file_info, &out_path, false).await.unwrap();
         let downloaded = std::fs::read(&out_path).unwrap();
 
         assert_eq!(downloaded.len(), modified_data.len());
@@ -1452,7 +1452,7 @@ mod tests {
         let xfi = crate::processing::XetFileInfo::new(hash.hex(), size);
         let dir = TempDir::new().unwrap();
         let out = dir.path().join("out");
-        session.download_file(&xfi, &out).await.unwrap();
+        session.download_file(&xfi, &out, false).await.unwrap();
         std::fs::read(&out).unwrap()
     }
 

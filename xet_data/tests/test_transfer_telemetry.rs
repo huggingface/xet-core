@@ -203,7 +203,7 @@ async fn test_download_emits_one_terminal_document() {
 
     let download = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
     let out = env.base_dir.join("out.bin");
-    download.download_file(&xfi, &out).await.unwrap();
+    download.download_file(&xfi, &out, false).await.unwrap();
     download.finalize().await.unwrap();
 
     assert_eq!(std::fs::read(&out).unwrap(), data);
@@ -239,7 +239,7 @@ async fn test_transfer_id_separates_directions() {
     upload.finalize().await.unwrap();
 
     let download = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
-    download.download_file(&xfi, &env.base_dir.join("o.bin")).await.unwrap();
+    download.download_file(&xfi, &env.base_dir.join("o.bin"), false).await.unwrap();
     download.finalize().await.unwrap();
 
     let docs = env.telemetry_docs();
