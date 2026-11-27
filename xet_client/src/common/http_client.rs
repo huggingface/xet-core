@@ -84,12 +84,36 @@ fn headers_tag(headers: Option<&HeaderMap>) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// Whether a client asks servers to compress response bodies.
+///
+/// CAS API responses are JSON and compress well: the v2 reconstruction of a 488 MB file with 901 terms is 173 KiB,
+/// or 27 KiB gzip-compressed, which saves several round trips of TCP slow start on a high-latency link. Xorb range
+/// downloads from the CDN are already-compressed chunk data read by a streaming decoder; they must stay byte-for-byte
+/// as stored, so those clients never send `Accept-Encoding`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResponseCompression {
+    /// Send `Accept-Encoding: gzip` and transparently decompress gzip responses.
+    Gzip,
+    /// Request and return response bodies as sent.
+    Identity,
+}
+
+impl ResponseCompression {
+    fn tag(self) -> &'static str {
+        match self {
+            ResponseCompression::Gzip => "gzip",
+            ResponseCompression::Identity => "identity",
+        }
+    }
+}
+
 #[allow(unused_variables)]
 #[cfg(not(target_family = "wasm"))]
 fn reqwest_client_raw(
     config: &XetConfig,
     unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
+    compression: ResponseCompression,
 ) -> std::result::Result<reqwest::Client, reqwest::Error> {
     let socket_path = unix_socket_path
         .map(|s| s.to_string())
@@ -103,6 +127,7 @@ fn reqwest_client_raw(
         .pool_max_idle_per_host(client_cfg.max_idle_connections)
         .connect_timeout(client_cfg.connect_timeout)
         .read_timeout(client_cfg.read_timeout)
+        .gzip(compression == ResponseCompression::Gzip)
         .http1_only();
 
     #[cfg(unix)]
@@ -136,6 +161,8 @@ fn reqwest_client_no_read_timeout(
         .pool_idle_timeout(client_cfg.idle_connection_timeout)
         .pool_max_idle_per_host(client_cfg.max_idle_connections)
         .connect_timeout(client_cfg.connect_timeout)
+        // Shard upload v2 streams NDJSON progress events; a compressed response could be buffered by the server.
+        .gzip(false)
         .http1_only();
 
     #[cfg(unix)]
@@ -157,11 +184,13 @@ fn reqwest_client_no_read_timeout(
     Ok(client)
 }
 
+/// On wasm the browser's `fetch` negotiates response compression itself, so `_compression` has no effect.
 #[cfg(target_family = "wasm")]
 fn reqwest_client_raw(
     _config: &XetConfig,
     _unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
+    _compression: ResponseCompression,
 ) -> std::result::Result<reqwest::Client, reqwest::Error> {
     let mut builder = reqwest::Client::builder();
     if let Some(custom_headers) = custom_headers {
@@ -170,14 +199,26 @@ fn reqwest_client_raw(
     builder.build()
 }
 
-/// Builds authenticated HTTP Client to talk to CAS.
-#[allow(unused_mut)]
+/// Builds authenticated HTTP Client to talk to the CAS API. Responses are requested gzip-compressed and
+/// decompressed transparently.
 pub fn build_auth_http_client(
     ctx: &XetContext,
     auth_config: &Option<AuthConfig>,
     session_id: &str,
     unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
+) -> Result<ClientWithMiddleware> {
+    build_client(ctx, auth_config, session_id, unix_socket_path, custom_headers, ResponseCompression::Gzip)
+}
+
+#[allow(unused_mut)]
+fn build_client(
+    ctx: &XetContext,
+    auth_config: &Option<AuthConfig>,
+    session_id: &str,
+    unix_socket_path: Option<&str>,
+    custom_headers: Option<Arc<HeaderMap>>,
+    compression: ResponseCompression,
 ) -> Result<ClientWithMiddleware> {
     let auth_middleware = auth_config.as_ref().map(AuthMiddleware::from).info_none("CAS auth disabled");
     let logging_middleware = Some(LoggingMiddleware);
@@ -189,10 +230,15 @@ pub fn build_auth_http_client(
     let socket_path = unix_socket_path
         .map(|s| s.to_string())
         .or_else(|| config_arc.client.unix_socket_path.clone());
-    let tag = format!("{}|{}", socket_path.as_deref().unwrap_or("tcp"), headers_tag(custom_headers.as_deref()));
+    let tag = format!(
+        "{}|{}|{}",
+        socket_path.as_deref().unwrap_or("tcp"),
+        headers_tag(custom_headers.as_deref()),
+        compression.tag()
+    );
 
     let raw_client = ctx.common.get_or_create_reqwest_client(tag, move || {
-        reqwest_client_raw(config_arc.as_ref(), unix_owned.as_deref(), custom_for_client)
+        reqwest_client_raw(config_arc.as_ref(), unix_owned.as_deref(), custom_for_client, compression)
     })?;
 
     if socket_path.is_some() {
@@ -255,14 +301,15 @@ pub fn build_auth_http_client_no_read_timeout(
         .build())
 }
 
-/// Builds HTTP Client to talk to CAS.
+/// Builds an unauthenticated HTTP Client, used for xorb range downloads and uploads at presigned URLs and for token
+/// refreshes. Response bodies are requested uncompressed and returned as sent.
 pub fn build_http_client(
     ctx: &XetContext,
     session_id: &str,
     unix_socket_path: Option<&str>,
     custom_headers: Option<Arc<HeaderMap>>,
 ) -> Result<ClientWithMiddleware> {
-    build_auth_http_client(ctx, &None, session_id, unix_socket_path, custom_headers)
+    build_client(ctx, &None, session_id, unix_socket_path, custom_headers, ResponseCompression::Identity)
 }
 
 /// Helper trait to allow the reqwest_middleware client to optionally add a middleware.
@@ -515,6 +562,121 @@ mod tests {
         let ctx = XetContext::default().expect("xet context");
         let result = build_http_client(&ctx, "test-session", None, None);
         assert!(result.is_ok());
+    }
+
+    /// Which clients ask for compressed responses, against a server that gzips only when asked.
+    #[cfg(not(target_family = "wasm"))]
+    mod response_compression_tests {
+        use std::io::Write;
+        use std::sync::Mutex as StdMutex;
+
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        use super::*;
+
+        const BODY: &str =
+            r#"{"terms": [{"hash": "abc", "range": {"start": 0, "end": 8}}], "offset_into_first_range": 0}"#;
+
+        /// Serves `BODY` to every request, gzip-compressed when the request accepts gzip. Returns the URL and the
+        /// `Accept-Encoding` header of each request received (empty if absent).
+        async fn start_server() -> (String, Arc<StdMutex<Vec<String>>>) {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/v2/reconstructions/abc", listener.local_addr().unwrap());
+            let seen = Arc::new(StdMutex::new(Vec::new()));
+            let seen_by_server = seen.clone();
+            tokio::spawn(async move {
+                loop {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let n = socket.read(&mut buf).await.unwrap();
+                        if n == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&buf[..n]);
+                    }
+                    let accept_encoding = String::from_utf8(request)
+                        .unwrap()
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("accept-encoding").then(|| value.trim().to_string())
+                        })
+                        .unwrap_or_default();
+
+                    let (body, encoding) = if accept_encoding.contains("gzip") {
+                        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                        encoder.write_all(BODY.as_bytes()).unwrap();
+                        (encoder.finish().unwrap(), "Content-Encoding: gzip\r\n")
+                    } else {
+                        (BODY.as_bytes().to_vec(), "")
+                    };
+                    seen_by_server.lock().unwrap().push(accept_encoding);
+
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{encoding}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    socket.write_all(head.as_bytes()).await.unwrap();
+                    socket.write_all(&body).await.unwrap();
+                    socket.flush().await.unwrap();
+                }
+            });
+            (url, seen)
+        }
+
+        #[tokio::test]
+        async fn test_cas_api_client_requests_and_decodes_gzip() {
+            let (url, seen) = start_server().await;
+            let ctx = XetContext::default().unwrap();
+            let client = build_auth_http_client(&ctx, &None, "test-session", None, None).unwrap();
+
+            let body = client.get(&url).send().await.unwrap().text().await.unwrap();
+
+            assert_eq!(body, BODY);
+            assert_eq!(seen.lock().unwrap().as_slice(), ["gzip"]);
+        }
+
+        #[tokio::test]
+        async fn test_download_client_requests_uncompressed_bodies() {
+            let (url, seen) = start_server().await;
+            let ctx = XetContext::default().unwrap();
+            let client = build_http_client(&ctx, "test-session", None, None).unwrap();
+
+            let body = client.get(&url).send().await.unwrap().bytes().await.unwrap();
+
+            assert_eq!(body, BODY.as_bytes());
+            assert_eq!(seen.lock().unwrap().as_slice(), [""]);
+        }
+
+        #[tokio::test]
+        async fn test_shard_upload_client_requests_uncompressed_bodies() {
+            let (url, seen) = start_server().await;
+            let ctx = XetContext::default().unwrap();
+            let client = build_auth_http_client_no_read_timeout(&ctx, &None, "test-session", None, None).unwrap();
+
+            let body = client.get(&url).send().await.unwrap().bytes().await.unwrap();
+
+            assert_eq!(body, BODY.as_bytes());
+            assert_eq!(seen.lock().unwrap().as_slice(), [""]);
+        }
+
+        #[tokio::test]
+        async fn test_both_clients_in_one_context() {
+            // The clients are cached per context; the download client must not pick up the CAS client's settings.
+            let (url, seen) = start_server().await;
+            let ctx = XetContext::default().unwrap();
+            let cas = build_auth_http_client(&ctx, &None, "test-session", None, None).unwrap();
+            let download = build_http_client(&ctx, "test-session", None, None).unwrap();
+
+            assert_eq!(cas.get(&url).send().await.unwrap().text().await.unwrap(), BODY);
+            assert_eq!(download.get(&url).send().await.unwrap().bytes().await.unwrap(), BODY.as_bytes());
+            assert_eq!(seen.lock().unwrap().as_slice(), ["gzip", ""]);
+        }
     }
 
     mod shard_upload_client_tests {

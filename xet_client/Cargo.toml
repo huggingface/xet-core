@@ -105,6 +105,7 @@ required-features = ["analysis"]
 [dev-dependencies]
 approx = { workspace = true }
 ctor = { workspace = true }
+flate2 = { workspace = true }
 mockall = { workspace = true }
 httpmock = { workspace = true }
 rand_distr = { workspace = true }

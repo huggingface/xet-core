@@ -90,6 +90,7 @@ rand = "0.10"
 rand_chacha = "0.10"
 regex = "1"
 reqwest = { version = "0.13.1", features = [
+    "gzip",
     "json",
     "stream",
     "system-proxy",
@@ -144,6 +145,7 @@ winapi = { version = "0.3", features = [
 
 # dev-deps
 approx = "0.5"
+flate2 = "1"
 httpmock = "0.8"
 rand_core = "0.10"
 rand_distr = "0.6"
