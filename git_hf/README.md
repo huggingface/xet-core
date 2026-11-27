@@ -118,7 +118,7 @@ Run `git-hf --help`, or put the binary on PATH and use `git hf --help`.
 | `clone <git-clone-args...>` | Accept Git clone options, repository, and destination as an opaque argument list. |
 | `fetch [remote] [revision]` | Download the Xet files of a local revision (default HEAD) into the repository's cache, skipping files already cached; do not fetch Git refs or change the worktree. |
 | `checkout [--force] [paths...]` | Reconstruct the files of indexed Xet pointers from local Xet data, without network access; `--force` also replaces modified files. |
-| `pull [remote] [--force]` | Fetch content for the current checkout, then reconstruct; do not run `git pull`. |
+| `pull [remote] [--force]` | Download the Xet files the current checkout is missing (contacting the Hub only if some are), then reconstruct them as `checkout` does; `--force` also replaces modified files. Does not run `git pull` or change Git refs. |
 | `filter-process [--smudge-passthrough]` | Internal required filter; smudge returns stored bytes unchanged. `--smudge-passthrough` is accepted and ignored. |
 | `pre-push <remote> <location>` | Internal hook receiving Git's ref updates on stdin; uploads the staged data they reference. |
 

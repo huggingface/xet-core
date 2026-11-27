@@ -2,7 +2,7 @@ use std::path::{Component, Path, PathBuf};
 
 use git_extension_common::GitRepo;
 
-use crate::checkout::{checkout, list_paths};
+use crate::checkout::{CheckoutSummary, checkout, list_paths};
 use crate::constants::GIT_HF_PROGRAM;
 use crate::file_cache::FileCache;
 use crate::{GitHfError, Result};
@@ -20,7 +20,12 @@ pub(super) fn run(paths: &[PathBuf], force: bool) -> Result<()> {
         .map(|path| repo_relative(&workdir, &wd.join(path)))
         .collect::<Result<Vec<_>>>()?;
     let cache = FileCache::new(&repo.common_dir()?)?;
-    let summary = checkout(&wd, &cache, &pathspecs, force)?;
+    report(&checkout(&wd, &cache, &pathspecs, force)?);
+    Ok(())
+}
+
+/// Prints what a checkout replaced and what it left unchanged.
+pub(super) fn report(summary: &CheckoutSummary) {
     let copied = match summary.copied {
         0 => String::new(),
         n => format!("; {n} copied because the filesystem cannot clone them"),
@@ -33,7 +38,6 @@ pub(super) fn run(paths: &[PathBuf], force: bool) -> Result<()> {
             list_paths(&summary.modified)
         );
     }
-    Ok(())
 }
 
 /// `path` relative to the worktree root, as Git spells paths. Like Git, resolves `.` and `..`
