@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use git_extension_common::GitRepo;
 use xet_client::cas_client::adaptive_concurrency::ConnectionPermit;
 use xet_client::cas_client::{Client, MemoryClient, ProgressCallback, ShardUploadProgressCallback, URLProvider};
 use xet_client::cas_types::{
@@ -36,6 +37,11 @@ use xet_runtime::core::XetContext;
 use xet_runtime::file_utils::SafeFileCreator;
 
 use crate::GitHfError;
+
+/// The staging directory of `repo`. It is under the common Git directory, so linked worktrees share it.
+pub(crate) fn staging_dir(repo: &GitRepo) -> crate::Result<PathBuf> {
+    Ok(repo.common_dir()?.join("xet").join("staging"))
+}
 
 /// Never removed: deleting a lock file others may hold open would split later lockers.
 const LOCK_FILE: &str = ".lock";

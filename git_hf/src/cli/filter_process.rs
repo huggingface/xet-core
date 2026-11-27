@@ -186,9 +186,7 @@ mod tests {
     // Nothing is finalized after an error: no shards, and the session's scratch is gone.
     // Small inputs never fill a xorb, so no xorb is written either.
     fn assert_nothing_finalized(repo: &git_extension_common::test_utils::TestRepo) -> anyhow::Result<()> {
-        let root = git_extension_common::GitRepo::open(repo.path())?
-            .common_dir()?
-            .join("xet/staging");
+        let root = crate::staging::staging_dir(&git_extension_common::GitRepo::open(repo.path())?)?;
         let mut entries = std::fs::read_dir(&root)?
             .map(|entry| Ok(entry?.file_name()))
             .collect::<std::io::Result<Vec<_>>>()?;

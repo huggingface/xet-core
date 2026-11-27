@@ -22,7 +22,7 @@ use xet_runtime::core::XetContext;
 use crate::auth::resolve_credential;
 use crate::constants::GIT_HF_PROGRAM;
 use crate::hook::ensure_installed;
-use crate::staging::{StagedDedupSource, StagingClient, lock_shared};
+use crate::staging::{StagedDedupSource, StagingClient, lock_shared, staging_dir};
 use crate::utils::path_from_bytes;
 use crate::{GitHfError, Result, cas_token};
 
@@ -112,7 +112,7 @@ impl CleanSession {
                     )
                 },
             }
-            let base = repo.common_dir()?.join("xet").join("staging");
+            let base = staging_dir(&repo)?;
             let staging_lock = lock_shared(&base)?;
             let scratch = tempfile::Builder::new().prefix("session-").tempdir_in(&base)?;
             // Resolved outside the time budget below, which cannot interrupt blocking calls. Lookups

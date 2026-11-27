@@ -1,22 +1,33 @@
 //! Uploads the locally staged Xet data referenced by pushed Git history.
 //!
-//! Selection follows Git reachability, not the branch checked out during clean: the pointer blobs
-//! newly reachable from the pushed refs name file hashes, and staged shards map those to file
-//! records and xorbs. A staged xorb table lists only local xorbs not yet uploaded, so a referenced
-//! xorb in some table must be uploaded (a missing file is a local error); one in no table came from
-//! remote dedup or an earlier push. Pointers without a staged record are left to server-side
-//! validation, unless local staging state says one may be unbacked: a failure marker naming its hash,
-//! or a staged shard that cannot be read. Staging state unrelated to the pushed pointers never
+//! What to upload comes from the pushed commits, not from the branch checked out. Push lists the Xet pointers in
+//! commits the remote does not have yet. Each pointer names a file hash, and the staged shards map that hash to the
+//! file's record: the xorbs holding its data.
+//!
+//! Those xorbs are of two kinds. A xorb that a clean session wrote and that is not uploaded yet is
+//! listed in that session's staged shard and stored as `xorbs/<hash>.xorb`; push uploads that file,
+//! and fails if it is missing. Any other xorb is already on the Hub, found by dedup against the Hub
+//! or uploaded by an earlier push; no staged shard lists it, and push skips it.
+//!
+//! A pointer with no staged record, such as one fetched from the Hub, is left to the Hub, which rejects
+//! pushes containing pointers whose data is missing. The exception is when a staged shard cannot be
+//! read: it may hold the record, so push fails. Staging state unrelated to the pushed pointers never
 //! blocks a push.
 //!
-//! Whole xorbs are uploaded, including chunks of unrelated files, then new shards registering just
-//! the pushed files. Nothing local changes until every upload succeeds, so a failed push retries in
-//! full. Afterwards the uploaded shards go to the endpoint's global shard cache, which keeps their
-//! chunks available for dedup, and the uploaded data leaves staging: staged shards are rewritten
-//! without the uploaded xorbs and registered files, then the xorb files are deleted. Records of
-//! unpushed files stay staged. Their xorbs may now exist only on the Hub that received this push.
-//! While a clean session is running, the uploaded data stays staged instead: the push never waits
-//! for one, since it may belong to the Git command that started the push.
+//! Whole xorbs are uploaded, including chunks of unrelated files, then new shards listing the
+//! uploaded xorbs and registering just the pushed files. Nothing local changes until every upload
+//! succeeds, so a failed push retries in full. Afterwards the uploaded shards go to the endpoint's
+//! global shard cache, which keeps their chunks available for dedup, and the uploaded data leaves
+//! staging. A staged shard that lists only uploaded xorbs and pushed files is deleted; one that also
+//! lists other xorbs or files is replaced by a shard listing only those; other shards are unchanged.
+//! Then the uploaded xorb files are deleted. A xorb can also hold chunks of files that were not
+//! pushed; their records stay staged and now point to a xorb already on the Hub, so a later push of
+//! those files succeeds without uploading it again.
+//!
+//! Removing uploaded data needs an exclusive lock on staging, and every running clean session holds
+//! a shared one. If a clean session is running, such as the `git commit` whose post-commit hook ran
+//! this push, push skips the removal instead of waiting, which could deadlock. The data then stays
+//! staged, and a later push of those files uploads it again.
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -36,7 +47,6 @@ use xet_core_structures::metadata_shard::{
 };
 use xet_core_structures::xorb_object::{SerializedXorbObject, XorbObject};
 
-use crate::clean_session::{FINALIZE_FAILED_DIR, read_failure_marker};
 use crate::constants::GIT_HF_PROGRAM;
 use crate::staging::try_lock_exclusive;
 use crate::{GitHfError, HexHash, MAX_POINTER_SIZE, Result, XetPointer};
@@ -143,58 +153,36 @@ fn read_shard(path: &Path) -> Result<MDBMinimalShard> {
     Ok(MDBMinimalShard::from_reader(&mut Cursor::new(std::fs::read(path)?), true, true)?)
 }
 
-/// Fails if a pushed pointer without a staged record may be unbacked: an earlier clean session that
-/// could not finalize returned it, or an unreadable staged shard or marker may hold its record.
-/// Markers are matched by file hash, not by the current index: an unbacked pointer may be committed
-/// even after its path is deleted or replaced. Markers whose hashes are all staged are removed.
-fn check_unbacked(staging: &Path, index: &StagedIndex, pointers: &BTreeMap<MerkleHash, Vec<u8>>) -> Result<()> {
-    let missing: BTreeMap<_, _> = pointers.iter().filter(|(hash, _)| !index.contains_file(hash)).collect();
-    let mut unreadable = index.unreadable.clone();
-    let mut unbacked = BTreeMap::new();
-    let entries = match std::fs::read_dir(staging.join(FINALIZE_FAILED_DIR)) {
-        Ok(entries) => entries.collect::<std::io::Result<Vec<_>>>()?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(error.into()),
-    };
-    for entry in entries {
-        let marker = entry.path();
-        let Ok(hashes) = read_failure_marker(&marker) else {
-            unreadable.push(marker);
-            continue;
-        };
-        if hashes.iter().all(|hash| index.contains_file(hash)) {
-            std::fs::remove_file(&marker)?;
-            continue;
-        }
-        for hash in hashes {
-            if let Some(path) = missing.get(&hash) {
-                unbacked.entry(hash).or_insert_with(|| (*path, marker.clone()));
-            }
-        }
+/// Fails if a pushed pointer has no staged record while a staged shard cannot be read: that shard may
+/// hold the record, so the pointer's data may not be uploaded. The error names the unreadable files,
+/// the pushed refs, and each such pointer's path in them.
+fn check_unreadable(
+    index: &StagedIndex,
+    pointers: &BTreeMap<MerkleHash, Vec<u8>>,
+    updates: &[RefUpdate],
+) -> Result<()> {
+    let unrecorded: Vec<_> = pointers
+        .iter()
+        .filter(|(hash, _)| !index.contains_file(hash))
+        .map(|(_, path)| format!("  {}", String::from_utf8_lossy(path)))
+        .collect();
+    if index.unreadable.is_empty() || unrecorded.is_empty() {
+        return Ok(());
     }
-    if !unbacked.is_empty() {
-        let files: Vec<_> = unbacked
-            .iter()
-            .map(|(hash, (path, marker))| {
-                format!("  {} ({}; marker: {})", String::from_utf8_lossy(path), hash.hex(), marker.display())
-            })
-            .collect();
-        return Err(GitHfError::Staging(format!(
-            "an earlier `git add` could not save the data of these pushed files. Re-stage the same content with \
-             `git add --renormalize -- <paths>` and push again:\n{}\n\
-             If that content no longer exists, delete the markers; the Hub will then reject the push.",
-            files.join("\n")
-        )));
-    }
-    if !missing.is_empty() && !unreadable.is_empty() {
-        let paths: Vec<_> = unreadable.iter().map(|path| format!("  {}", path.display())).collect();
-        return Err(GitHfError::Staging(format!(
-            "pushed files have no readable staged record, and these staging files cannot be read, so their \
-             data may not be uploaded. Repair or delete them and push again:\n{}",
-            paths.join("\n")
-        )));
-    }
-    Ok(())
+    let unreadable: Vec<_> = index.unreadable.iter().map(|path| format!("  {}", path.display())).collect();
+    let refs: Vec<_> = updates
+        .iter()
+        .filter(|update| !is_zero_oid(&update.local_oid))
+        .map(|update| format!("{} ({})", update.local_ref, update.local_oid))
+        .collect();
+    Err(GitHfError::Staging(format!(
+        "these staged metadata files cannot be read:\n{}\nThese files in the pushed {} have no other staged \
+         record, so their data may not be uploaded:\n{}\nDelete the unreadable files, then stage these files \
+         again from the repository root with `git add --renormalize -- <paths>`, and push again.",
+        unreadable.join("\n"),
+        refs.join(", "),
+        unrecorded.join("\n"),
+    )))
 }
 
 /// Checks local staging state against the pointers newly reachable from the pushed refs, and plans
@@ -206,7 +194,7 @@ pub(crate) fn plan_push(wd: &Path, staging: &Path, updates: &[RefUpdate]) -> Res
         return Ok(None);
     }
     let index = StagedIndex::load(staging)?;
-    check_unbacked(staging, &index, &pointers)?;
+    check_unreadable(&index, &pointers, updates)?;
     let plan = UploadPlan::new(staging, &index, &pointers)?;
     Ok((!plan.files.is_empty()).then_some(plan))
 }
@@ -536,7 +524,7 @@ mod tests {
     }
 
     fn staging(repo: &TestRepo) -> anyhow::Result<PathBuf> {
-        Ok(GitRepo::open(repo.path())?.common_dir()?.join("xet/staging"))
+        Ok(crate::staging::staging_dir(&GitRepo::open(repo.path())?)?)
     }
 
     // Runs the pre-push steps after authentication against `client`, or a fresh remote.
@@ -746,59 +734,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    #[serial(env_var_write_read)]
-    fn failure_marker_blocks_until_hashes_are_restaged() -> anyhow::Result<()> {
-        let repo = TestRepo::new("main")?;
-        let _cwd = CwdGuard::set(repo.path())?;
-        let data = binary(b'a', BINARY_LIMIT + 1);
-        // Stage a pointer whose session fails to finalize.
-        let staging = staging(&repo)?;
-        let session = CleanSession::new()?;
-        let pointer = session.clean(&data)?;
-        fs::rename(staging.join("xorbs"), staging.join("saved-xorbs"))?;
-        fs::write(staging.join("xorbs"), b"blocked")?;
-        assert!(session.finish_blocking().is_err());
-        fs::remove_file(staging.join("xorbs"))?;
-        fs::rename(staging.join("saved-xorbs"), staging.join("xorbs"))?;
-        fs::write(repo.path().join("file"), &pointer)?;
-        run_git_captured(repo.path(), "add", ["file"])?;
-        run_git_captured(repo.path(), "commit", ["-m", "unbacked"])?;
-
-        let tip = head(&repo)?;
-        let error = push(&repo, &[update(&tip, ZERO)], None)
-            .err()
-            .unwrap()
-            .downcast::<GitHfError>()?;
-        let hash = crate::XetPointer::parse(&pointer)?.unwrap().hash;
-        assert!(
-            matches!(&error, GitHfError::Staging(message) if message.contains(&format!("  file ({hash};"))),
-            "{error}"
-        );
-
-        // Deleting the path does not resolve the marker: the unbacked pointer is still in history.
-        let old_tip = tip;
-        fs::remove_file(repo.path().join("file"))?;
-        run_git_captured(repo.path(), "commit", ["-am", "delete"])?;
-        let tip = head(&repo)?;
-        let error = push(&repo, &[update(&tip, ZERO)], None)
-            .err()
-            .unwrap()
-            .downcast::<GitHfError>()?;
-        assert!(matches!(error, GitHfError::Staging(_)));
-        // A push whose new history excludes the pointer is not blocked.
-        assert_eq!(push(&repo, &[update(&tip, &old_tip)], None)?.summary, UploadSummary::default());
-
-        // Re-staging the same content (as `git add --renormalize` would) clears the marker.
-        let session = CleanSession::new()?;
-        assert_eq!(session.clean(&data)?, pointer);
-        session.finish_blocking()?;
-        let pushed = push(&repo, &[update(&tip, ZERO)], None)?;
-        assert_eq!(pushed.summary.files, 1);
-        assert!(fs::read_dir(staging.join(FINALIZE_FAILED_DIR))?.next().is_none());
-        Ok(())
-    }
-
     // Unreadable staging state blocks only pushes that reference pointers without a staged record.
     #[test]
     #[serial(env_var_write_read)]
@@ -808,13 +743,12 @@ mod tests {
         let staging = staging(&repo)?;
         let first = commit_staged(&repo, &[("a", &binary(b'a', BINARY_LIMIT + 1))], "a")?;
         fs::write(staging.join("shards").join("broken.mdb"), b"not a shard")?;
-        fs::create_dir_all(staging.join(FINALIZE_FAILED_DIR))?;
-        fs::write(staging.join(FINALIZE_FAILED_DIR).join("broken"), b"not a hash\n")?;
         // Every pushed pointer has a record, so the push proceeds.
         let pushed = push(&repo, &[update(&first, ZERO)], None)?;
         assert_eq!(pushed.summary.files, 1);
 
-        // A pointer with no record may be in the unreadable shard, so the push fails and names both files.
+        // A pointer with no record may be in the unreadable shard, so the push fails and names the shard,
+        // the pushed ref, and the pointer's path.
         let foreign = XetPointer::new(hex_hash(MerkleHash::from([9, 9, 9, 9])), 1234).to_string();
         fs::write(repo.path().join("remote-only"), foreign)?;
         run_git_captured(repo.path(), "add", ["remote-only"])?;
@@ -827,34 +761,14 @@ mod tests {
         let GitHfError::Staging(message) = error else {
             panic!("{error}");
         };
-        for broken in [
-            staging.join("shards").join("broken.mdb"),
-            staging.join(FINALIZE_FAILED_DIR).join("broken"),
-        ] {
-            assert!(message.contains(&broken.display().to_string()), "{message}");
-        }
+        let broken = staging.join("shards").join("broken.mdb");
+        assert!(message.contains(&format!("\n  {}\n", broken.display())), "{message}");
+        assert!(message.contains(&format!("pushed refs/heads/main ({tip})")), "{message}");
+        assert!(message.contains(":\n  remote-only\nDelete the unreadable files"), "{message}");
 
-        // Without the unreadable files, it is left to the server.
-        fs::remove_file(staging.join("shards").join("broken.mdb"))?;
-        fs::remove_file(staging.join(FINALIZE_FAILED_DIR).join("broken"))?;
+        // Without the unreadable shard, it is left to the Hub.
+        fs::remove_file(&broken)?;
         assert_eq!(push(&repo, &[update(&tip, &first)], Some(pushed.client))?.summary, UploadSummary::default());
-        Ok(())
-    }
-
-    // A failure marker for pointers the push does not reference does not block it.
-    #[test]
-    #[serial(env_var_write_read)]
-    fn unrelated_failure_marker_does_not_block() -> anyhow::Result<()> {
-        let repo = TestRepo::new("main")?;
-        let _cwd = CwdGuard::set(repo.path())?;
-        let staging = staging(&repo)?;
-        let tip = commit_staged(&repo, &[("a", &binary(b'a', BINARY_LIMIT + 1))], "a")?;
-        let marker = staging.join(FINALIZE_FAILED_DIR).join("other");
-        fs::create_dir_all(marker.parent().unwrap())?;
-        fs::write(&marker, format!("{}\n", MerkleHash::from([5, 5, 5, 5]).hex()))?;
-        assert_eq!(push(&repo, &[update(&tip, ZERO)], None)?.summary.files, 1);
-        // The marker stays: its pointer is still unbacked, and a later push may reference it.
-        assert!(marker.is_file());
         Ok(())
     }
 }
