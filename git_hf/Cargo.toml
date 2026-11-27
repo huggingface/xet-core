@@ -15,6 +15,7 @@ clap = { workspace = true }
 dirs = { workspace = true }
 git_extension_common = { path = "../git_extension_common" }
 git2 = { workspace = true }
+reflink-copy = { workspace = true }
 rust-netrc = { workspace = true }
 shellexpand = { workspace = true, features = ["path"] }
 tempfile = { workspace = true }
