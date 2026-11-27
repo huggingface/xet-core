@@ -1901,6 +1901,7 @@ dependencies = [
  "http",
  "more-asserts",
  "pyo3",
+ "rand 0.10.1",
  "serde",
  "serde_json",
  "serial_test",
@@ -4804,6 +4805,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
@@ -5874,6 +5876,7 @@ dependencies = [
  "clap",
  "criterion",
  "dirs",
+ "futures-util",
  "gearhash",
  "http",
  "itertools 0.14.0",
