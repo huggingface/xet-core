@@ -9,10 +9,10 @@
 //! and fails if it is missing. Any other xorb is already on the Hub, found by dedup against the Hub
 //! or uploaded by an earlier push; no staged shard lists it, and push skips it.
 //!
-//! A pointer with no staged record, such as one fetched from the Hub, is left to the Hub, which rejects
-//! pushes containing pointers whose data is missing. The exception is when a staged shard cannot be
-//! read: it may hold the record, so push fails. Staging state unrelated to the pushed pointers never
-//! blocks a push.
+//! A pointer with no staged record, such as one fetched from the Hub or uploaded by an earlier push, is
+//! left to the Hub, which rejects pushes containing pointers whose data is missing. A staged shard that
+//! cannot be read may hold such a record, but push cannot tell, since a new ref lists its whole history,
+//! so it only warns. Staging state never blocks a push by itself.
 //!
 //! Whole xorbs are uploaded, including chunks of unrelated files, then new shards listing the
 //! uploaded xorbs and registering just the pushed files. Nothing local changes until every upload
@@ -153,36 +153,20 @@ fn read_shard(path: &Path) -> Result<MDBMinimalShard> {
     Ok(MDBMinimalShard::from_reader(&mut Cursor::new(std::fs::read(path)?), true, true)?)
 }
 
-/// Fails if a pushed pointer has no staged record while a staged shard cannot be read: that shard may
-/// hold the record, so the pointer's data may not be uploaded. The error names the unreadable files,
-/// the pushed refs, and each such pointer's path in them.
-fn check_unreadable(
-    index: &StagedIndex,
-    pointers: &BTreeMap<MerkleHash, Vec<u8>>,
-    updates: &[RefUpdate],
-) -> Result<()> {
-    let unrecorded: Vec<_> = pointers
-        .iter()
-        .filter(|(hash, _)| !index.contains_file(hash))
-        .map(|(_, path)| format!("  {}", String::from_utf8_lossy(path)))
-        .collect();
-    if index.unreadable.is_empty() || unrecorded.is_empty() {
-        return Ok(());
+/// A warning naming the unreadable staged shards, if any pushed pointer has no staged record: such a
+/// shard may hold that record, so the pointer's data may not be uploaded. Push cannot tell this apart
+/// from data already on the Hub, which the Hub's push check accepts, so it does not fail.
+fn unreadable_warning(index: &StagedIndex, pointers: &BTreeMap<MerkleHash, Vec<u8>>) -> Option<String> {
+    if index.unreadable.is_empty() || pointers.keys().all(|hash| index.contains_file(hash)) {
+        return None;
     }
     let unreadable: Vec<_> = index.unreadable.iter().map(|path| format!("  {}", path.display())).collect();
-    let refs: Vec<_> = updates
-        .iter()
-        .filter(|update| !is_zero_oid(&update.local_oid))
-        .map(|update| format!("{} ({})", update.local_ref, update.local_oid))
-        .collect();
-    Err(GitHfError::Staging(format!(
-        "these staged metadata files cannot be read:\n{}\nThese files in the pushed {} have no other staged \
-         record, so their data may not be uploaded:\n{}\nDelete the unreadable files, then stage these files \
-         again from the repository root with `git add --renormalize -- <paths>`, and push again.",
-        unreadable.join("\n"),
-        refs.join(", "),
-        unrecorded.join("\n"),
-    )))
+    Some(format!(
+        "these staged metadata files cannot be read, and the data of pushed files they record is not uploaded:\n\
+         {}\nIf the Hub rejects this push for missing data, delete these files, stage the files it names again \
+         from the repository root with `git add --renormalize -- <paths>`, and push again.",
+        unreadable.join("\n")
+    ))
 }
 
 /// Checks local staging state against the pointers newly reachable from the pushed refs, and plans
@@ -194,7 +178,9 @@ pub(crate) fn plan_push(wd: &Path, staging: &Path, updates: &[RefUpdate]) -> Res
         return Ok(None);
     }
     let index = StagedIndex::load(staging)?;
-    check_unreadable(&index, &pointers, updates)?;
+    if let Some(warning) = unreadable_warning(&index, &pointers) {
+        eprintln!("{GIT_HF_PROGRAM}: {warning}");
+    }
     let plan = UploadPlan::new(staging, &index, &pointers)?;
     Ok((!plan.files.is_empty()).then_some(plan))
 }
@@ -418,7 +404,7 @@ pub(crate) fn release_uploaded(staging: &Path, plan: &UploadPlan) -> Result<bool
     let directory = staging.join("shards");
     // Shards published after the index was loaded are rescanned: they may list the same files.
     for path in staged_shards(staging)? {
-        // An unreadable shard is left as is; pushes that may need its records fail until it is fixed.
+        // An unreadable shard is left as is; pushes that may need its records warn until it is fixed.
         let Ok(shard) = read_shard(&path) else {
             continue;
         };
@@ -734,41 +720,34 @@ mod tests {
         Ok(())
     }
 
-    // Unreadable staging state blocks only pushes that reference pointers without a staged record.
+    // Unreadable staging state never blocks a push; it warns only when a pushed pointer has no record.
     #[test]
     #[serial(env_var_write_read)]
-    fn unreadable_staging_blocks_only_unrecorded_pointers() -> anyhow::Result<()> {
+    fn unreadable_staging_warns_only_for_unrecorded_pointers() -> anyhow::Result<()> {
         let repo = TestRepo::new("main")?;
         let _cwd = CwdGuard::set(repo.path())?;
         let staging = staging(&repo)?;
         let first = commit_staged(&repo, &[("a", &binary(b'a', BINARY_LIMIT + 1))], "a")?;
-        fs::write(staging.join("shards").join("broken.mdb"), b"not a shard")?;
-        // Every pushed pointer has a record, so the push proceeds.
+        let broken = staging.join("shards").join("broken.mdb");
+        fs::write(&broken, b"not a shard")?;
+        // Every pushed pointer has a record: no warning, and the push uploads it.
+        let pointers = pushed_pointers(repo.path(), &[update(&first, ZERO)])?;
+        assert_eq!(unreadable_warning(&StagedIndex::load(&staging)?, &pointers), None);
         let pushed = push(&repo, &[update(&first, ZERO)], None)?;
         assert_eq!(pushed.summary.files, 1);
 
-        // A pointer with no record may be in the unreadable shard, so the push fails and names the shard,
-        // the pushed ref, and the pointer's path.
+        // Pushing the same history as a new ref lists the uploaded file again, now without a record, and a
+        // pointer from elsewhere has none either. Both may be in the unreadable shard: a warning names it,
+        // and the push proceeds.
         let foreign = XetPointer::new(hex_hash(MerkleHash::from([9, 9, 9, 9])), 1234).to_string();
         fs::write(repo.path().join("remote-only"), foreign)?;
         run_git_captured(repo.path(), "add", ["remote-only"])?;
         run_git_captured(repo.path(), "commit", ["-m", "remote-only"])?;
         let tip = head(&repo)?;
-        let error = push(&repo, &[update(&tip, &first)], Some(pushed.client.clone()))
-            .err()
-            .unwrap()
-            .downcast::<GitHfError>()?;
-        let GitHfError::Staging(message) = error else {
-            panic!("{error}");
-        };
-        let broken = staging.join("shards").join("broken.mdb");
-        assert!(message.contains(&format!("\n  {}\n", broken.display())), "{message}");
-        assert!(message.contains(&format!("pushed refs/heads/main ({tip})")), "{message}");
-        assert!(message.contains(":\n  remote-only\nDelete the unreadable files"), "{message}");
-
-        // Without the unreadable shard, it is left to the Hub.
-        fs::remove_file(&broken)?;
-        assert_eq!(push(&repo, &[update(&tip, &first)], Some(pushed.client))?.summary, UploadSummary::default());
+        let pointers = pushed_pointers(repo.path(), &[update(&tip, ZERO)])?;
+        let warning = unreadable_warning(&StagedIndex::load(&staging)?, &pointers).unwrap();
+        assert!(warning.contains(&format!("\n  {}\n", broken.display())), "{warning}");
+        assert_eq!(push(&repo, &[update(&tip, ZERO)], Some(pushed.client))?.summary, UploadSummary::default());
         Ok(())
     }
 }
