@@ -56,7 +56,7 @@ pub async fn deserialize_chunk<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(
 /// Uses a single `read()` call to detect EOF (returns 0), then completes
 /// any partial header with `read_exact`. An `UnexpectedEof` from `read_exact`
 /// means the stream was truncated mid-header.
-async fn try_read_chunk_header_async<R: AsyncRead + Unpin>(
+pub async fn try_read_chunk_header_async<R: AsyncRead + Unpin>(
     reader: &mut R,
 ) -> Result<Option<XorbChunkHeader>, CoreError> {
     let mut header_buf = [0u8; XORB_CHUNK_HEADER_LENGTH];

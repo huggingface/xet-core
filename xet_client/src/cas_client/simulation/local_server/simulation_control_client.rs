@@ -207,10 +207,10 @@ impl Client for SimulationControlClient {
         url_info: Box<dyn crate::cas_client::interface::URLProvider>,
         download_permit: crate::cas_client::adaptive_concurrency::ConnectionPermit,
         progress_callback: Option<crate::cas_client::ProgressCallback>,
-        uncompressed_size_if_known: Option<usize>,
-    ) -> Result<(Bytes, Vec<u32>)> {
+        output: std::sync::Arc<crate::cas_client::XorbBlockData>,
+    ) -> Result<()> {
         self.remote_client
-            .get_file_term_data(url_info, download_permit, progress_callback, uncompressed_size_if_known)
+            .get_file_term_data(url_info, download_permit, progress_callback, output)
             .await
     }
 

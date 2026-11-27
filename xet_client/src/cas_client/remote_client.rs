@@ -5,6 +5,7 @@ use anyhow::anyhow;
 use bytes::Bytes;
 use crc_fast::CrcAlgorithm;
 use futures::TryStreamExt;
+use futures::io::{AsyncRead, AsyncReadExt};
 use http::header::{CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderName, RANGE};
 use http::{HeaderValue, Method};
 use reqwest::{Body, Response, StatusCode, Url};
@@ -17,6 +18,7 @@ use web_time::Instant;
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::{FileDataSequenceEntry, FileDataSequenceHeader, MDBFileInfo};
 use xet_core_structures::xorb_object::SerializedXorbObject;
+use xet_core_structures::xorb_object::deserialize_async::try_read_chunk_header_async;
 use xet_runtime::core::XetContext;
 
 use super::adaptive_concurrency::{
@@ -32,7 +34,7 @@ use super::retry_wrapper::{RetryWrapper, RetryableReqwestError};
 use super::shard_upload_v2::read_shard_upload_ndjson;
 #[cfg(not(target_family = "wasm"))]
 use super::telemetry::TransferTelemetry;
-use super::{Client, INFORMATION_LOG_LEVEL};
+use super::{Client, INFORMATION_LOG_LEVEL, XorbBlockData};
 use crate::cas_client::ShardUploadProgressType;
 use crate::cas_types::{
     BatchQueryReconstructionResponse, Checksum, FileChunkHashesResponse, FileRange, HttpRange, Key,
@@ -1043,8 +1045,8 @@ impl Client for RemoteClient {
         url_info: Box<dyn URLProvider>,
         download_permit: ConnectionPermit,
         progress_callback: Option<ProgressCallback>,
-        uncompressed_size_if_known: Option<usize>,
-    ) -> Result<(Bytes, Vec<u32>)> {
+        output: Arc<XorbBlockData>,
+    ) -> Result<()> {
         let api_tag = "s3::get_range";
         let http_client = self.http_client.clone();
         let url_info = Arc::new(url_info);
@@ -1058,7 +1060,11 @@ impl Client for RemoteClient {
             transfer_reporter = transfer_reporter.with_progress_callback(cb);
         }
 
-        let result = RetryWrapper::new(self.ctx.clone(), api_tag)
+        // The signed URL only allows the exact signed range, so a retry downloads the whole range again; chunks
+        // appended by an earlier attempt are skipped rather than appended twice.
+        let chunks_at_start = output.num_chunks();
+
+        RetryWrapper::new(self.ctx.clone(), api_tag)
             .with_retry_on_403()
             .with_connection_permit(download_permit, None)
             .run_and_process(
@@ -1105,6 +1111,7 @@ impl Client for RemoteClient {
                 },
                 move |resp: Response| {
                     let transfer_reporter = transfer_reporter.clone();
+                    let output = output.clone();
                     async move {
                         let content_type = resp
                             .headers()
@@ -1113,86 +1120,42 @@ impl Client for RemoteClient {
                             .unwrap_or("")
                             .to_string();
 
-                        let is_multipart = content_type.contains("multipart/byteranges");
+                        let mut skip_chunks = output.num_chunks() - chunks_at_start;
 
-                        if is_multipart {
+                        if content_type.contains("multipart/byteranges") {
                             let body = resp
                                 .bytes()
                                 .await
                                 .map_err(|e| RetryableReqwestError::RetryableError(ClientError::from(e)))?;
 
-                            let multipart_parts = crate::cas_client::multipart::parse_multipart_byteranges(&content_type, body)
-                                .map_err(RetryableReqwestError::FatalError)?;
+                            let multipart_parts =
+                                crate::cas_client::multipart::parse_multipart_byteranges(&content_type, body)
+                                    .map_err(RetryableReqwestError::FatalError)?;
 
-                            let mut all_decompressed = Vec::with_capacity(uncompressed_size_if_known.unwrap_or(0));
-                            let mut all_chunk_indices = Vec::<u32>::new();
-                            let mut total_compressed_bytes = 0u64;
+                            // The whole body has been received: report it before appending, since readers may
+                            // finish the reconstruction as soon as the last chunk is appended.
+                            let total_compressed_bytes = multipart_parts.iter().map(|part| part.data.len()).sum();
+                            transfer_reporter.report_progress(total_compressed_bytes);
 
                             for part in multipart_parts {
-                                total_compressed_bytes += part.data.len() as u64;
-
-                                let (data, chunk_indices) =
-                                    xet_core_structures::xorb_object::deserialize_chunks(&mut std::io::Cursor::new(part.data.as_ref()))
-                                        .map_err(|e| {
-                                            RetryableReqwestError::RetryableError(ClientError::FormatError(e))
-                                        })?;
-
-                                xet_core_structures::xorb_object::append_chunk_segment(
-                                    &mut all_decompressed,
-                                    &mut all_chunk_indices,
-                                    &data,
-                                    &chunk_indices,
-                                );
-
-                                transfer_reporter.report_progress(total_compressed_bytes as usize);
+                                output
+                                    .append_serialized_chunks(&part.data, &mut skip_chunks)
+                                    .map_err(RetryableReqwestError::RetryableError)?;
                             }
-
-                            if let Some(expected) = uncompressed_size_if_known
-                                && expected != all_decompressed.len()
-                            {
-                                return Err(RetryableReqwestError::RetryableError(ClientError::Other(format!(
-                                    "get_file_term_data: expected {expected} uncompressed bytes, got {}",
-                                    all_decompressed.len()
-                                ))));
-                            }
-                            Ok((Bytes::from(all_decompressed), all_chunk_indices))
+                            Ok(())
                         } else {
                             let incoming_stream = DownloadProgressStream::wrap_stream(
                                 resp.bytes_stream().map_err(std::io::Error::other),
                                 transfer_reporter,
                             );
-
-                            let capacity = uncompressed_size_if_known.unwrap_or(0);
-                            let mut buffer = Vec::with_capacity(capacity);
-                            let mut writer = std::io::Cursor::new(&mut buffer);
-
-                            let result = xet_core_structures::xorb_object::deserialize_async::deserialize_chunks_to_writer_from_stream(
-                                incoming_stream,
-                                &mut writer,
-                            )
-                            .await;
-
-                            match result {
-                                Ok((_compressed_len, chunk_byte_indices)) => {
-                                    if let Some(expected) = uncompressed_size_if_known
-                                        && expected != buffer.len()
-                                    {
-                                        return Err(RetryableReqwestError::RetryableError(ClientError::Other(format!(
-                                            "get_file_term_data: expected {expected} uncompressed bytes, got {}",
-                                            buffer.len()
-                                        ))));
-                                    }
-                                    Ok((Bytes::from(buffer), chunk_byte_indices))
-                                },
-                                Err(e) => Err(RetryableReqwestError::RetryableError(ClientError::FormatError(e))),
-                            }
+                            append_chunks_from_stream(incoming_stream.into_async_read(), &output, skip_chunks)
+                                .await
+                                .map_err(RetryableReqwestError::RetryableError)
                         }
                     }
                 },
             )
-            .await?;
-
-        Ok(result)
+            .await
     }
 
     #[instrument(skip_all, name = "RemoteClient::get_file_reconstruction", fields(file.hash = file_hash.hex()
@@ -1433,6 +1396,26 @@ impl Client for RemoteClient {
 
         Ok(response)
     }
+}
+
+/// Decompresses the serialized chunks read from `reader` into `output` as each one arrives, skipping the first
+/// `skip_chunks` (already appended by an earlier attempt).
+async fn append_chunks_from_stream(
+    mut reader: impl AsyncRead + Unpin,
+    output: &XorbBlockData,
+    mut skip_chunks: usize,
+) -> Result<()> {
+    let mut compressed = Vec::new();
+    while let Some(header) = try_read_chunk_header_async(&mut reader).await? {
+        compressed.resize(header.get_compressed_length() as usize, 0);
+        reader.read_exact(&mut compressed).await?;
+        if skip_chunks > 0 {
+            skip_chunks -= 1;
+            continue;
+        }
+        output.append_compressed_chunk(&header, &compressed)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2242,6 +2225,277 @@ mod tests {
             let client = test_client_with_config(&server.uri(), config);
             upload_test_xorb(&client, None).await.unwrap();
             assert_eq!(grant_fallbacks(&client), 0);
+        }
+    }
+
+    /// `get_file_term_data` against a scripted HTTP server: chunks are appended as they arrive, a retry after a
+    /// dropped connection re-requests the exact signed range and skips the chunks already appended, and
+    /// multipart responses decode part by part.
+    mod file_term_data {
+        use std::sync::Mutex;
+        use std::time::Duration;
+
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+        use tokio::sync::Notify;
+        use xet_core_structures::xorb_object::serialize_chunk;
+        use xet_runtime::config::XetConfig;
+
+        use super::*;
+        use crate::cas_types::HttpRange;
+
+        /// How the server answers one request.
+        enum Reply {
+            /// The whole body.
+            Full,
+            /// The first `n` body bytes, then the connection is dropped.
+            CutAfter(usize),
+            /// The first `n` body bytes, then waits for `resume` before sending the rest.
+            PauseAfter(usize, Arc<Notify>),
+            /// A `multipart/byteranges` body with one part per requested range.
+            Multipart,
+        }
+
+        struct TestServer {
+            url: String,
+            /// The `Range` header of every request received.
+            ranges: Arc<Mutex<Vec<String>>>,
+        }
+
+        /// Serves `body` (the serialized xorb) for each request in turn with the next scripted reply.
+        async fn start_server(body: Vec<u8>, replies: Vec<Reply>) -> TestServer {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/xorb", listener.local_addr().unwrap());
+            let ranges = Arc::new(Mutex::new(Vec::new()));
+            let seen = ranges.clone();
+            tokio::spawn(async move {
+                for reply in replies {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let range = read_request_range(&mut socket).await;
+                    seen.lock().unwrap().push(range.clone());
+                    respond(&mut socket, &body, &range, reply).await;
+                }
+            });
+            TestServer { url, ranges }
+        }
+
+        async fn read_request_range(socket: &mut TcpStream) -> String {
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.ends_with(b"\r\n\r\n") {
+                let n = socket.read(&mut buf).await.unwrap();
+                assert!(n > 0, "connection closed before the request was read");
+                request.extend_from_slice(&buf[..n]);
+            }
+            String::from_utf8(request)
+                .unwrap()
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("range").then(|| value.trim().to_string())
+                })
+                .expect("request has a Range header")
+        }
+
+        /// Parses `bytes=a-b,c-d` into inclusive ranges.
+        fn parse_ranges(range: &str) -> Vec<(usize, usize)> {
+            range
+                .strip_prefix("bytes=")
+                .unwrap()
+                .split(',')
+                .map(|r| {
+                    let (a, b) = r.split_once('-').unwrap();
+                    (a.parse().unwrap(), b.parse().unwrap())
+                })
+                .collect()
+        }
+
+        async fn respond(socket: &mut TcpStream, body: &[u8], range: &str, reply: Reply) {
+            let ranges = parse_ranges(range);
+            if let Reply::Multipart = reply {
+                let mut payload = Vec::new();
+                for &(start, end) in &ranges {
+                    payload.extend_from_slice(
+                        format!(
+                            "--B\r\nContent-Type: application/octet-stream\r\nContent-Range: bytes {start}-{end}/{}\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    );
+                    payload.extend_from_slice(&body[start..=end]);
+                    payload.extend_from_slice(b"\r\n");
+                }
+                payload.extend_from_slice(b"--B--\r\n");
+                write_response(socket, "multipart/byteranges; boundary=B", &payload).await;
+                return;
+            }
+
+            assert_eq!(ranges.len(), 1);
+            let (start, end) = ranges[0];
+            let payload = &body[start..=end];
+            let head = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
+            socket.write_all(head.as_bytes()).await.unwrap();
+            match reply {
+                Reply::Full => socket.write_all(payload).await.unwrap(),
+                Reply::CutAfter(n) => socket.write_all(&payload[..n]).await.unwrap(),
+                Reply::PauseAfter(n, resume) => {
+                    socket.write_all(&payload[..n]).await.unwrap();
+                    socket.flush().await.unwrap();
+                    resume.notified().await;
+                    socket.write_all(&payload[n..]).await.unwrap();
+                },
+                Reply::Multipart => unreachable!(),
+            }
+            socket.flush().await.unwrap();
+        }
+
+        async fn write_response(socket: &mut TcpStream, content_type: &str, payload: &[u8]) {
+            let head = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
+            socket.write_all(head.as_bytes()).await.unwrap();
+            socket.write_all(payload).await.unwrap();
+            socket.flush().await.unwrap();
+        }
+
+        struct FixedUrl {
+            url: String,
+            ranges: Vec<HttpRange>,
+        }
+
+        #[async_trait::async_trait]
+        impl URLProvider for FixedUrl {
+            async fn retrieve_url(&self) -> Result<(String, Vec<HttpRange>)> {
+                Ok((self.url.clone(), self.ranges.clone()))
+            }
+
+            async fn refresh_url(&self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        /// `n` distinct 64 KiB chunks, their serialized xorb bytes, and the serialized end offset of each chunk.
+        fn test_chunks(n: usize) -> (Vec<Vec<u8>>, Vec<u8>, Vec<usize>) {
+            let chunks: Vec<Vec<u8>> = (0..n)
+                .map(|i| (0..64 * 1024).map(|j| ((j * 31 + i * 7) % 251) as u8).collect())
+                .collect();
+            let mut serialized = Vec::new();
+            let mut ends = Vec::new();
+            for chunk in &chunks {
+                serialize_chunk(chunk, &mut serialized, CompressionScheme::LZ4).unwrap();
+                ends.push(serialized.len());
+            }
+            (chunks, serialized, ends)
+        }
+
+        fn test_client() -> Arc<RemoteClient> {
+            let mut config = XetConfig::new();
+            config.client.retry_base_delay = Duration::from_millis(5);
+            config.client.retry_max_attempts = 3;
+            let ctx = XetContext::from_external(tokio::runtime::Handle::current(), config);
+            RemoteClient::new(ctx, "http://127.0.0.1:1", &None, "", false, None)
+        }
+
+        async fn fetch(
+            client: &RemoteClient,
+            url: &str,
+            ranges: Vec<HttpRange>,
+            output: Arc<XorbBlockData>,
+        ) -> Result<()> {
+            let permit = client.acquire_download_permit().await?;
+            let url_info = Box::new(FixedUrl {
+                url: url.to_string(),
+                ranges,
+            });
+            client.get_file_term_data(url_info, permit, None, output).await
+        }
+
+        fn expected_offsets(chunks: &[Vec<u8>]) -> Vec<u32> {
+            let mut offsets = vec![0u32];
+            for chunk in chunks {
+                offsets.push(offsets.last().unwrap() + chunk.len() as u32);
+            }
+            offsets
+        }
+
+        #[tokio::test]
+        async fn test_chunks_are_ready_before_the_body_ends() {
+            let (chunks, serialized, ends) = test_chunks(4);
+            let resume = Arc::new(Notify::new());
+            let server = start_server(serialized.clone(), vec![Reply::PauseAfter(ends[0], resume.clone())]).await;
+
+            let client = test_client();
+            let output = Arc::new(XorbBlockData::with_exact_size(chunks.concat().len()));
+            let fetch_task = {
+                let output = output.clone();
+                let ranges = vec![HttpRange::new(0, serialized.len() as u64 - 1)];
+                tokio::spawn(async move { fetch(&client, &server.url, ranges, output).await })
+            };
+
+            // The server holds back everything after the first chunk until the first chunk is readable.
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while output.ready_bytes() < chunks[0].len() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("first chunk must be appended before the rest of the body is sent");
+            assert_eq!(output.ready_bytes(), chunks[0].len());
+            assert!(!fetch_task.is_finished());
+
+            resume.notify_one();
+            fetch_task.await.unwrap().unwrap();
+            output.finish().unwrap();
+            assert_eq!(output.contents().unwrap().0, chunks.concat());
+        }
+
+        #[tokio::test]
+        async fn test_retry_after_partial_body_skips_appended_chunks() {
+            let (chunks, serialized, ends) = test_chunks(5);
+            // Drop the first connection in the middle of the third chunk, after two whole chunks.
+            let cut = ends[1] + (ends[2] - ends[1]) / 2;
+            let server = start_server(serialized.clone(), vec![Reply::CutAfter(cut), Reply::Full]).await;
+
+            let client = test_client();
+            let output = Arc::new(XorbBlockData::with_exact_size(chunks.concat().len()));
+            let range = HttpRange::new(0, serialized.len() as u64 - 1);
+            fetch(&client, &server.url, vec![range], output.clone()).await.unwrap();
+            output.finish().unwrap();
+
+            // Both requests ask for the exact signed range; the retry is not narrowed to the remainder.
+            let requested = server.ranges.lock().unwrap().clone();
+            assert_eq!(requested, vec![range.range_header(), range.range_header()]);
+
+            // Every chunk is appended exactly once, in order.
+            let (data, offsets) = output.contents().unwrap();
+            assert_eq!(data, chunks.concat());
+            assert_eq!(offsets, expected_offsets(&chunks));
+        }
+
+        #[tokio::test]
+        async fn test_multipart_response() {
+            let (chunks, serialized, ends) = test_chunks(4);
+            let server = start_server(serialized.clone(), vec![Reply::Multipart]).await;
+
+            // Two ranges: chunks 0..2 and chunks 3..4 (chunk 2 is not requested).
+            let ranges = vec![
+                HttpRange::new(0, ends[1] as u64 - 1),
+                HttpRange::new(ends[2] as u64, ends[3] as u64 - 1),
+            ];
+            let expected: Vec<Vec<u8>> = vec![chunks[0].clone(), chunks[1].clone(), chunks[3].clone()];
+
+            let client = test_client();
+            let output = Arc::new(XorbBlockData::with_exact_size(expected.concat().len()));
+            fetch(&client, &server.url, ranges, output.clone()).await.unwrap();
+            output.finish().unwrap();
+
+            let (data, offsets) = output.contents().unwrap();
+            assert_eq!(data, expected.concat());
+            assert_eq!(offsets, expected_offsets(&expected));
         }
     }
 }

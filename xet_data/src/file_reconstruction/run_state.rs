@@ -111,6 +111,11 @@ impl RunState {
     }
 
     /// Future that resolves when cancelled; for use in `select!`.
+    /// Whether the reconstruction has been cancelled, either directly or by an error.
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancellation_token.is_cancelled()
+    }
+
     pub(crate) async fn cancelled(&self) {
         self.cancellation_token.cancelled().await;
     }
