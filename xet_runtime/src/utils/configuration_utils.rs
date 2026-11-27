@@ -59,7 +59,7 @@ pub trait ParsableConfigValue: std::fmt::Debug + Sized {
 }
 
 /// Most values work with the FromStr implementation, but we want to override the behavior for some types
-/// (e.g. Option<T> and bool) to have custom parsing behavior.
+/// (e.g. `Option<T>` and `bool`) to have custom parsing behavior.
 pub trait FromStrParseable: FromStr + std::fmt::Debug + std::fmt::Display {}
 
 impl<T: FromStrParseable> ParsableConfigValue for T {
@@ -86,7 +86,23 @@ impl FromStrParseable for i64 {}
 impl FromStrParseable for f32 {}
 impl FromStrParseable for f64 {}
 impl FromStrParseable for String {}
-impl FromStrParseable for ByteSize {}
+
+/// `ByteSize` displays in rounded SI units (e.g. `1.235MB`), so `to_config_string` falls back to the exact
+/// byte count whenever the displayed form would not parse back to the same value.
+impl ParsableConfigValue for ByteSize {
+    fn parse_user_value(value: &str) -> Option<Self> {
+        value.parse::<ByteSize>().ok()
+    }
+
+    fn to_config_string(&self) -> String {
+        let display = self.to_string();
+        if display.parse::<ByteSize>().is_ok_and(|parsed| parsed == *self) {
+            display
+        } else {
+            self.as_u64().to_string()
+        }
+    }
+}
 
 /// Special handling for bool:
 /// - true: "1","true","yes","y","on"  -> true
@@ -111,7 +127,7 @@ impl ParsableConfigValue for bool {
     }
 }
 
-/// Enable Option<T> to allow the default value to be None if nothing is set and appear as
+/// Enable `Option<T>` to allow the default value to be None if nothing is set and appear as
 /// Some(Value) if the user specifies the value.
 impl<T: ParsableConfigValue> ParsableConfigValue for Option<T> {
     fn parse_user_value(value: &str) -> Option<Self> {
@@ -445,7 +461,11 @@ mod tests {
             ByteSize::new(1000),
             ByteSize::new(1_000_000),
             ByteSize::new(8_000_000),
-            ByteSize::new(10_000_000_000)
+            ByteSize::new(10_000_000_000),
+            ByteSize::new(1_234_567),
+            ByteSize::new(1_000_000_001),
+            ByteSize::new(999_999),
+            ByteSize::new(u32::MAX as u64)
         );
     }
 

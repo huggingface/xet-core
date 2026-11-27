@@ -123,7 +123,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "need valid write token"]
     async fn test_get_jwt_token_with_hf_write_token() -> Result<()> {
-        let cred_helper = BearerCredentialHelper::new("[hf_write_token]".to_owned(), "");
+        let cred_helper = BearerCredentialHelper::new("[hf_write_token]".to_owned());
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static("xtool"));
         let hub_client = HubClient::new(
@@ -151,7 +151,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "need valid read token and pr created on hub"]
     async fn test_get_jwt_token_with_hf_read_token_pr_branch() -> Result<()> {
-        let cred_helper = BearerCredentialHelper::new("[hf_read_token]".to_owned(), "");
+        let cred_helper = BearerCredentialHelper::new("[hf_read_token]".to_owned());
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static("xtool"));
         let hub_client = HubClient::new(
@@ -179,7 +179,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "need valid read token"]
     async fn test_get_jwt_token_with_hf_read_token_create_pr() -> Result<()> {
-        let cred_helper = BearerCredentialHelper::new("[hf_read_token]".to_owned(), "");
+        let cred_helper = BearerCredentialHelper::new("[hf_read_token]".to_owned());
         let mut headers = HeaderMap::new();
         headers.insert(header::USER_AGENT, HeaderValue::from_static("xtool"));
         let hub_client = HubClient::new(

@@ -3,9 +3,9 @@
 //! Git receives pointers before the session is finalized at process shutdown. Git aborts a command
 //! on any required-filter error, so request failures never publish earlier pointers. Shutdown is
 //! different: Git has already written the index and ignores the filter's exit status. A failed
-//! finalization therefore writes a marker listing the affected file hashes, for pre-push to check.
+//! finalization therefore tells the user which files to stage again. The Hub rejects pushes
+//! containing pointers whose data is missing.
 use std::fs::File;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,16 +15,15 @@ use tempfile::TempDir;
 use tokio::sync::OnceCell;
 use xet_client::cas_client::Client;
 use xet_client::hub_client::{CredentialHelper, Operation};
-use xet_core_structures::merklehash::MerkleHash;
 use xet_data::processing::configurations::{SessionContext, TranslatorConfig};
 use xet_data::processing::{FileUploadSession, UploadShardCachePolicy};
 use xet_runtime::core::XetContext;
-use xet_runtime::file_utils::SafeFileCreator;
 
 use crate::auth::resolve_credential;
 use crate::constants::GIT_HF_PROGRAM;
 use crate::hook::ensure_installed;
-use crate::staging::{StagedDedupSource, StagingClient, lock_shared};
+use crate::staging::{StagedDedupSource, StagingClient, lock_shared, staging_dir};
+use crate::utils::path_from_bytes;
 use crate::{GitHfError, Result, cas_token};
 
 pub(crate) struct CleanSession {
@@ -32,45 +31,29 @@ pub(crate) struct CleanSession {
     state: OnceCell<Arc<CleanSessionState>>,
 }
 
-/// Directory under staging holding one marker per failed session. A marker lists the hex file hash
-/// of each pointer the session returned, one per line. It records no paths: a pointer may be
-/// committed, and its path changed or removed, before a push finds it unbacked, so push locates it
-/// in the pushed commits instead.
-pub(crate) const FINALIZE_FAILED_DIR: &str = "finalize-failed";
-
 pub(crate) struct CleanSessionState {
     pub(crate) session: Arc<FileUploadSession>,
     pub(crate) dedup: Arc<StagedDedupSource>,
-    // Returned pointers (file hash and pathname) that depend on this session's finalization.
-    files: Mutex<Vec<(MerkleHash, Vec<u8>)>>,
+    // Paths of the returned pointers that depend on this session's finalization.
+    files: Mutex<Vec<PathBuf>>,
     // Keep temporary metadata alive until all file cleaners and finalization finish.
-    scratch: TempDir,
+    _scratch: TempDir,
+    // Where finalization writes staged data; named when it fails.
     staging: PathBuf,
     worktree: PathBuf,
-    // Push must not remove staged shards this session's dedup may still read.
-    _staging_lock: File,
+    // Push must not remove staged shards this session's dedup may still read; `None` if the filesystem
+    // has no file locks.
+    _staging_lock: Option<File>,
 }
 
 impl CleanSessionState {
-    pub(crate) fn record_file(&self, hash: MerkleHash, pathname: &[u8]) -> Result<()> {
+    pub(crate) fn record_file(&self, pathname: &[u8]) -> Result<()> {
+        let path = path_from_bytes(pathname);
         self.files
             .lock()
             .map_err(|_| GitHfError::Internal("Clean session path lock poisoned".into()))?
-            .push((hash, pathname.to_vec()));
+            .push(path);
         Ok(())
-    }
-
-    /// Writes `staging/finalize-failed/<session>` atomically and returns its path.
-    fn write_failure_marker(&self, files: &[(MerkleHash, Vec<u8>)]) -> Result<PathBuf> {
-        let name = self.scratch.path().file_name().unwrap();
-        let marker = self.staging.join(FINALIZE_FAILED_DIR).join(name);
-        std::fs::create_dir_all(marker.parent().unwrap())?;
-        let mut file = SafeFileCreator::new(&marker)?;
-        for (hash, _) in files {
-            writeln!(file, "{}", hash.hex())?;
-        }
-        file.close()?;
-        Ok(marker)
     }
 }
 
@@ -111,7 +94,7 @@ impl CleanSession {
 
     async fn create_state(&self) -> Result<Arc<CleanSessionState>> {
         // The repository handle isn't Sync, so it is dropped before the first await.
-        let (worktree, base, scratch, remote, staging_lock) = {
+        let (worktree, staging, scratch, remote, staging_lock) = {
             let repo = GitRepo::open_from_cur_dir()?;
             let worktree = repo
                 .worktree_dir()?
@@ -130,16 +113,24 @@ impl CleanSession {
                     )
                 },
             }
-            let base = repo.common_dir()?.join("xet").join("staging");
-            let staging_lock = lock_shared(&base)?;
-            let scratch = tempfile::Builder::new().prefix("session-").tempdir_in(&base)?;
+            let staging = staging_dir(&repo)?;
+            let staging_lock = lock_shared(&staging)?;
+            if staging_lock.is_none() {
+                eprintln!(
+                    "{GIT_HF_PROGRAM}: {} does not support file locks; continuing without one, so pushes will \
+                     leave uploaded data staged. To free space, delete that directory once every commit is \
+                     pushed, no worktree has staged changes, and no `git add` is running.",
+                    staging.display()
+                );
+            }
+            let scratch = tempfile::Builder::new().prefix("session-").tempdir_in(&staging)?;
             // Resolved outside the time budget below, which cannot interrupt blocking calls. Lookups
             // never prompt and bound themselves: 2 s for a credential helper, a connect timeout for SSH.
             let remote = repo.remote_url().ok().and_then(|url| {
                 let credential = resolve_credential(&repo, &url, Operation::Download, Interaction::Never).ok()?;
                 Some((url, repo.branch_name().ok()?, credential.helper()))
             });
-            (worktree, base, scratch, remote, staging_lock)
+            (worktree, staging, scratch, remote, staging_lock)
         };
         let id = scratch.path().file_name().unwrap().to_string_lossy().into_owned();
         let remote = match remote {
@@ -157,9 +148,8 @@ impl CleanSession {
             None => (None, TranslatorConfig::memory_config(&self.ctx, scratch.path())?),
         };
         config.shard_session_directory = scratch.path().join("session");
-        config.force_disable_progress_aggregation = true;
-        let client = StagingClient::new(self.ctx.clone(), &base, remote)?;
-        let dedup = StagedDedupSource::new(&self.ctx, &base.join("shards")).await?;
+        let client = StagingClient::new(self.ctx.clone(), &staging, remote)?;
+        let dedup = StagedDedupSource::new(&self.ctx, &staging.join("shards")).await?;
         let session = FileUploadSession::new_with_client(
             Arc::new(config),
             client,
@@ -171,15 +161,15 @@ impl CleanSession {
             session,
             dedup,
             files: Mutex::new(Vec::new()),
-            scratch,
-            staging: base,
+            _scratch: scratch,
+            staging,
             worktree,
             _staging_lock: staging_lock,
         }))
     }
 
-    /// Finalizes staged work. On failure, records the affected paths before returning the error,
-    /// because Git will not report it: the index already references the returned pointers.
+    /// Finalizes staged work. On failure, the error names the affected paths and how to stage them
+    /// again, because Git will not report it: the index already references the returned pointers.
     pub(crate) async fn finish(self) -> Result<()> {
         let Some(state) = self.state.into_inner() else {
             return Ok(());
@@ -191,8 +181,7 @@ impl CleanSession {
             .files
             .lock()
             .map_err(|_| GitHfError::Internal("Clean session path lock poisoned".into()))?;
-        report_failure(state.write_failure_marker(&files), &state.worktree, &files);
-        Err(error.into())
+        Err(finalize_failure(&error, &state.staging, &state.worktree, &files))
     }
 
     /// Cleans `data` as one request for `file`, blocking until done.
@@ -223,29 +212,23 @@ impl CleanSession {
     }
 }
 
-fn report_failure(marker: Result<PathBuf>, worktree: &std::path::Path, files: &[(MerkleHash, Vec<u8>)]) {
-    eprintln!(
-        "{GIT_HF_PROGRAM}: staging failed; these files in {} are staged as pointers without local data:",
-        worktree.display()
-    );
-    for (_, path) in files {
-        eprintln!("  {}", String::from_utf8_lossy(path));
-    }
-    eprintln!("{GIT_HF_PROGRAM}: after fixing the cause, run `git add --renormalize -- <paths>` in that worktree.");
-    match marker {
-        Ok(marker) => eprintln!("{GIT_HF_PROGRAM}: recorded in {}", marker.display()),
-        Err(error) => eprintln!("{GIT_HF_PROGRAM}: failed to record the affected paths: {error}"),
-    }
-}
-
-/// Reads the file hashes one marker lists.
-pub(crate) fn read_failure_marker(marker: &std::path::Path) -> Result<Vec<MerkleHash>> {
-    let invalid = || GitHfError::Staging(format!("{} is not a valid failure marker", marker.display()));
-    std::fs::read_to_string(marker)
-        .map_err(|_| invalid())?
-        .lines()
-        .map(|hex| MerkleHash::from_hex(hex).map_err(|_| invalid()))
-        .collect()
+/// Describes a failed finalization: its cause, the files staged as pointers without data, and how to
+/// stage them again. Finalization writes only to the staging directory.
+fn finalize_failure(
+    error: &dyn std::fmt::Display,
+    staging: &std::path::Path,
+    worktree: &std::path::Path,
+    files: &[PathBuf],
+) -> GitHfError {
+    let files: String = files.iter().map(|path| format!("  {}\n", path.display())).collect();
+    GitHfError::Staging(format!(
+        "could not write the data of newly staged files to {}: {error}\nThese files in {} are staged as \
+         pointers without their data:\n{files}Fix the error above, then run `git add --renormalize -- <paths>` \
+         in {} to stage these files again. The Hub rejects pushes containing pointers whose data is missing.",
+        staging.display(),
+        worktree.display(),
+        worktree.display(),
+    ))
 }
 
 #[cfg(test)]
@@ -261,6 +244,11 @@ mod tests {
 
     use super::*;
     use crate::{GitHfError, HexHash, PointerError, XetPointer};
+
+    // The staging directory a session uses: its scratch directory is created there.
+    fn staging_root(session: &CleanSession) -> anyhow::Result<std::path::PathBuf> {
+        Ok(session.state_blocking()?.staging.clone())
+    }
 
     // The file hash a clean output's pointer names.
     fn pointer_hash(pointer: &[u8]) -> anyhow::Result<MerkleHash> {
@@ -297,7 +285,7 @@ mod tests {
             Ok::<_, GitHfError>([first.join().unwrap()?, second.join().unwrap()?])
         })?;
         assert_ne!(pointers[0], pointers[1]);
-        let root = session.state_blocking()?.staging.clone();
+        let root = staging_root(&session)?;
         session.finish_blocking()?;
         assert_eq!(fs::read_dir(root.join("xorbs"))?.count(), 1);
         let files = fs::read_dir(root.join("shards"))?
@@ -324,9 +312,9 @@ mod tests {
         let a_hash = pointer_hash(&a_pointer)?;
         let second = CleanSession::new()?;
         second.clean(&b)?;
-        assert_ne!(first.state_blocking()?.scratch.path(), second.state_blocking()?.scratch.path());
-        assert_eq!(first.state_blocking()?.staging, second.state_blocking()?.staging);
-        let root = first.state_blocking()?.staging.clone();
+        assert_ne!(first.state_blocking()?._scratch.path(), second.state_blocking()?._scratch.path());
+        assert_eq!(staging_root(&first)?, staging_root(&second)?);
+        let root = staging_root(&first)?;
         first.finish_blocking()?;
         let first_xorb = fs::read_dir(root.join("xorbs"))?.next().unwrap()?.file_name();
         assert_eq!(second.clean(&a)?, a_pointer);
@@ -362,24 +350,24 @@ mod tests {
 
     #[test]
     #[serial(env_var_write_read)]
-    fn finalize_failure_records_unbacked_hashes() -> anyhow::Result<()> {
+    fn finalize_failure_leaves_no_staged_record() -> anyhow::Result<()> {
         let repo = TestRepo::new("main")?;
         let _cwd = CwdGuard::set(repo.path())?;
         let cleaner = CleanSession::new()?;
         let data = vec![b'a'; TEXT_LIMIT + 1];
         let result = cleaner.clean(&data)?;
         assert_eq!(XetPointer::parse(&result)?.unwrap().size, data.len() as u64);
-        let staging = GitRepo::open(repo.path())?.common_dir()?.join("xet/staging");
-        let root = staging;
+        let root = staging_root(&cleaner)?;
         // The remaining partial xorb is written at finalization. Make that destination unwritable.
         fs::rename(root.join("xorbs"), root.join("saved-xorbs"))?;
         fs::write(root.join("xorbs"), b"not a directory")?;
-        assert!(cleaner.finish_blocking().is_err());
+        // The pointer above is unbacked: the error names its cause and file, and no shard records it.
+        let Err(GitHfError::Staging(message)) = cleaner.finish_blocking() else {
+            panic!("expected a staging error");
+        };
+        assert!(message.contains(&format!("to {}: ", root.display())), "{message}");
+        assert!(message.contains("\n  file\n") && message.contains("--renormalize"), "{message}");
         assert_eq!(fs::read_dir(root.join("shards"))?.count(), 0);
-        // The pointer above is unbacked; the marker lists its hash.
-        let markers = fs::read_dir(root.join(FINALIZE_FAILED_DIR))?.collect::<std::io::Result<Vec<_>>>()?;
-        assert_eq!(markers.len(), 1);
-        assert_eq!(read_failure_marker(&markers[0].path())?, [pointer_hash(&result)?]);
         Ok(())
     }
 
@@ -430,8 +418,7 @@ mod tests {
             let out = cleaner.clean(&data)?;
             hashes.push(pointer_hash(&out)?);
         }
-        let stage = GitRepo::open(repo.path())?.common_dir()?.join("xet/staging");
-        let root = stage.clone();
+        let root = staging_root(&cleaner)?;
         assert_eq!(fs::read_dir(root.join("shards"))?.count(), 0);
         cleaner.finish_blocking()?;
         assert_eq!(fs::read_dir(root.join("xorbs"))?.count(), 1);
@@ -451,7 +438,7 @@ mod tests {
         second.clean(&data)?;
         second.finish_blocking()?;
         // Only `shards`, `xorbs`, and the lock file remain; session directories are removed.
-        assert_eq!(fs::read_dir(stage)?.count(), 3);
+        assert_eq!(fs::read_dir(&root)?.count(), 3);
         assert_eq!(fs::read_dir(root.join("xorbs"))?.count(), 2);
         Ok(())
     }
