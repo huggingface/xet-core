@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
@@ -527,9 +528,11 @@ impl AdaptiveConcurrencyController {
             .unwrap_or(*config.client.ac_max_reference_transmission_size);
         let target_rtt_secs = config.client.ac_target_rtt.as_secs_f64();
 
-        // If the success ratio is healthy and the predicted RTT is below the target RTT,
-        // then adjust the concurrency upwards.
-        if model_state.recommended_adjustment == 1
+        // If the transfer completed within a healthy time, the success ratio is healthy, and the
+        // predicted RTT is below the target RTT, adjust concurrency upwards.  Increasing when
+        // !completed_in_time would also reset last_adjustment_time and skip the decrease below.
+        if completed_in_time
+            && model_state.recommended_adjustment == 1
             && state_lg.bytes_sent_so_far >= self.min_bytes_required_for_adjustment
             && state_lg.completed_transmissions_count >= self.min_completed_transmissions_required_for_adjustment
             && state_lg.last_adjustment_time.elapsed() > self.min_concurrency_increase_delay
@@ -565,11 +568,11 @@ impl AdaptiveConcurrencyController {
         if state_lg.bytes_sent_so_far >= self.min_bytes_required_for_adjustment
             && state_lg.completed_transmissions_count >= self.min_completed_transmissions_required_for_adjustment
             && (!transmission_successful
-                || !completed_in_time
-                || (!partial_update && model_state.recommended_adjustment == -1))
+                || (!partial_update && (!completed_in_time || model_state.recommended_adjustment == -1)))
         {
-            // Now, only adjust it down if it's a fully completed transfer.  Otherwise we may run things out of
-            // permits too quickly.
+            // Only adjust down on a completed transfer (or an explicit failure); intermediate progress reports
+            // from an in-flight transfer past ac_max_healthy_rtt must wait for completion so they don't ratchet
+            // permits down repeatedly before the transfer finishes.
             if state_lg.last_adjustment_time.elapsed() > self.min_concurrency_decrease_delay {
                 let old_concurrency = self.concurrency_semaphore.total_permits();
 
@@ -580,10 +583,16 @@ impl AdaptiveConcurrencyController {
                 let new_concurrency = self.concurrency_semaphore.total_permits();
                 state_lg.last_adjustment_time = Instant::now();
 
-                let reason = if !transmission_successful {
-                    "transfer failed"
+                let reason: Cow<'static, str> = if !transmission_successful {
+                    Cow::Borrowed("transfer failed")
+                } else if !completed_in_time {
+                    Cow::Owned(format!(
+                        "exceeded max healthy RTT (elapsed = {:.2}s, max = {:.1}s)",
+                        elapsed_time.as_secs_f64(),
+                        config.client.ac_max_healthy_rtt.as_secs_f64()
+                    ))
                 } else {
-                    "success ratio below threshold (connection struggling)"
+                    Cow::Borrowed("success ratio below threshold (connection struggling)")
                 };
 
                 info!(
@@ -1167,5 +1176,89 @@ mod tests {
             small_concurrency >= large_concurrency,
             "Small-transfer concurrency ({small_concurrency}) should be >= large-transfer concurrency ({large_concurrency})"
         );
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_partial_updates_past_max_healthy_rtt_do_not_decrease_concurrency() {
+        time::pause();
+
+        let controller = AdaptiveConcurrencyController::new_testing(8, (2, 16));
+
+        // Establish healthy history where predicted RTT at the next concurrency level already meets
+        // target_rtt, matching high-concurrency steady state while success_ratio stays healthy (> 0.8).
+        let training_sizes: [u64; 3] = [32 * 1024 * 1024, 48 * 1024 * 1024, 64 * 1024 * 1024];
+        for (i, &size) in training_sizes.iter().cycle().take(12).enumerate() {
+            let permit = controller.acquire_connection_permit().await.unwrap();
+            let duration_secs = 30 + (i as u64 % 3) * 15; // 30s, 45s, 60s -> < ac_max_healthy_rtt (90s)
+            advance(Duration::from_secs(duration_secs)).await;
+            permit.report_completion(size, true).await;
+            advance(Duration::from_millis(INCR_SPACING_MS + 10)).await;
+        }
+        assert!(controller.success_model_state().await.success_ratio > 0.8);
+
+        let permits_before = controller.total_permits();
+        let long_permit = controller.acquire_connection_permit().await.unwrap();
+        long_permit.transfer_starting().await;
+
+        // Cross ac_max_healthy_rtt while the transfer is still actively streaming partial progress.
+        advance(controller.config.client.ac_max_healthy_rtt + Duration::from_secs(1)).await;
+
+        for step in 1..=5 {
+            advance(Duration::from_millis(DECR_SPACING_MS + 10)).await;
+            controller
+                .report_and_update(&long_permit.info, Some(step * 1024 * 1024), true, true, 0.02)
+                .await;
+            assert_eq!(
+                controller.total_permits(),
+                permits_before,
+                "partial update {step} past ac_max_healthy_rtt must not decrement concurrency"
+            );
+        }
+
+        // The completed transfer exceeding ac_max_healthy_rtt decrements once and logs the RTT reason.
+        advance(Duration::from_millis(DECR_SPACING_MS + 10)).await;
+        long_permit.report_completion(TEST_TRANSFER_SIZE, true).await;
+
+        assert_eq!(controller.total_permits(), permits_before - 1);
+        assert!(logs_contain("exceeded max healthy RTT"));
+        assert!(!logs_contain("success ratio below threshold (connection struggling)"));
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_decrease_reason_distinguishes_failure_and_success_ratio() {
+        time::pause();
+
+        let controller = AdaptiveConcurrencyController::new_testing(8, (2, 16));
+
+        // Establish a fast baseline with varied sizes so OLR predicts sub-second RTTs.
+        let sizes: [u64; 4] = [1 << 20, 2 << 20, 3 << 20, 4 << 20];
+        for i in 0..16 {
+            advance(Duration::from_millis(INCR_SPACING_MS + 10)).await;
+            let permit = controller.acquire_connection_permit().await.unwrap();
+            advance(Duration::from_millis(100 * (1 + i as u64 % 4))).await;
+            permit.report_completion(sizes[i % 4], true).await;
+        }
+        assert!(controller.success_model_state().await.success_ratio > 0.8);
+
+        // Explicit failure logs "transfer failed" (advance between DECR_SPACING_MS and INCR_SPACING_MS).
+        let permit = controller.acquire_connection_permit().await.unwrap();
+        advance(Duration::from_millis(DECR_SPACING_MS + 10)).await;
+        permit.report_completion(0, false).await;
+        assert!(logs_contain("reason: transfer failed"));
+
+        // Slow-but-healthy-RTT completions drop success_ratio below threshold via quantile misses
+        // while completed_in_time remains true, logging the success ratio reason.
+        for _ in 0..30 {
+            let p = controller.acquire_connection_permit().await.unwrap();
+            advance(Duration::from_secs(30)).await;
+            p.report_completion(1 << 20, true).await;
+            advance(Duration::from_millis(DECR_SPACING_MS + 10)).await;
+            if logs_contain("reason: success ratio below threshold (connection struggling)") {
+                break;
+            }
+        }
+        assert!(logs_contain("reason: success ratio below threshold (connection struggling)"));
     }
 }
