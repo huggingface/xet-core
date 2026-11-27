@@ -3,14 +3,15 @@ use std::sync::Arc;
 use http::header;
 use tracing::{Instrument, Span, info_span, instrument};
 use xet_client::cas_client::auth::TokenRefresher;
-use xet_client::hub_client::{BearerCredentialHelper, CredentialHelper, HubClient, Operation, RepoInfo};
+use xet_client::hub_client::{
+    BearerCredentialHelper, CredentialHelper, HubClient, HubClientTokenRefresher, Operation, RepoInfo,
+};
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
 use xet_runtime::core::XetContext;
 use xet_runtime::core::par_utils::run_constrained;
 
 use super::super::data_client::{clean_file, default_config};
 use super::super::{FileUploadSession, Sha256Policy, XetFileInfo};
-use super::hub_client_token_refresher::HubClientTokenRefresher;
 use crate::error::{DataError, Result};
 
 const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));

@@ -27,7 +27,6 @@
 //! With no credential, requests are anonymous, and the server decides whether that is enough: public
 //! repositories can be read, and a server without authentication, such as a local test server, accepts
 //! them. Like Git, other remotes, such as `git://` or a local path, use none of the Git sources above.
-#![cfg_attr(not(test), expect(dead_code, reason = "used by the clean filter and pre-push"))]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -58,6 +57,7 @@ impl ResolvedCredential {
         self.helper.clone()
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "only tests read the source so far"))]
     pub fn source(&self) -> &CredentialSource {
         &self.source
     }

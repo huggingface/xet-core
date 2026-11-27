@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use xet_client::cas_client::auth::{AuthError, TokenInfo, TokenRefresher};
-use xet_client::hub_client::{HubClient, Operation};
+use super::{HubClient, Operation};
+use crate::cas_client::auth::{AuthError, TokenInfo, TokenRefresher};
 
 pub struct HubClientTokenRefresher {
     pub operation: Operation,

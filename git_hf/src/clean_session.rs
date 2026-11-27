@@ -5,17 +5,16 @@
 //! different: Git has already written the index and ignores the filter's exit status. A failed
 //! finalization therefore tells the user which files to stage again. The Hub rejects pushes
 //! containing pointers whose data is missing.
+use std::fs::File;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use git_extension_common::{GitRepo, GitUrl, Interaction};
 use tempfile::TempDir;
 use tokio::sync::OnceCell;
-use xet_client::cas_client::auth::{AuthConfig, AuthError, TokenInfo, TokenRefresher};
-use xet_client::cas_client::{Client, RemoteClient};
-use xet_client::hub_client::{CredentialHelper, HubClient, Operation};
+use xet_client::cas_client::Client;
+use xet_client::hub_client::{CredentialHelper, Operation};
 use xet_data::processing::configurations::{SessionContext, TranslatorConfig};
 use xet_data::processing::{FileUploadSession, UploadShardCachePolicy};
 use xet_runtime::core::XetContext;
@@ -23,9 +22,9 @@ use xet_runtime::core::XetContext;
 use crate::auth::resolve_credential;
 use crate::constants::GIT_HF_PROGRAM;
 use crate::hook::ensure_installed;
-use crate::staging::{StagedDedupSource, StagingClient};
+use crate::staging::{StagedDedupSource, StagingClient, lock_shared, staging_dir};
 use crate::utils::path_from_bytes;
-use crate::{GitHfError, Result};
+use crate::{GitHfError, Result, cas_token};
 
 pub(crate) struct CleanSession {
     pub(crate) ctx: XetContext,
@@ -42,6 +41,9 @@ pub(crate) struct CleanSessionState {
     // Where finalization writes staged data; named when it fails.
     staging: PathBuf,
     worktree: PathBuf,
+    // Push must not remove staged shards this session's dedup may still read; `None` if the filesystem
+    // has no file locks.
+    _staging_lock: Option<File>,
 }
 
 impl CleanSessionState {
@@ -52,19 +54,6 @@ impl CleanSessionState {
             .map_err(|_| GitHfError::Internal("Clean session path lock poisoned".into()))?
             .push(path);
         Ok(())
-    }
-}
-
-struct HubTokens(Arc<HubClient>);
-#[async_trait]
-impl TokenRefresher for HubTokens {
-    async fn refresh(&self) -> std::result::Result<TokenInfo, AuthError> {
-        let info = self
-            .0
-            .get_cas_jwt(Operation::Download)
-            .await
-            .map_err(AuthError::token_refresh_failure)?;
-        Ok((info.access_token, info.exp))
     }
 }
 
@@ -88,39 +77,24 @@ impl CleanSession {
         credential: Arc<dyn CredentialHelper>,
         id: &str,
     ) -> Result<(Arc<dyn Client>, TranslatorConfig)> {
-        let hub = Arc::new(HubClient::new(
-            ctx.clone(),
-            &url.to_derived_http_host_url()?,
-            url.repo_info()?,
-            branch,
-            id,
-            Some(credential),
-            None,
-        )?);
-        let info = hub.get_cas_jwt(Operation::Download).await?;
-        let auth = Some(AuthConfig {
-            token: info.access_token,
-            token_expiration: info.exp,
-            token_refresher: Arc::new(HubTokens(hub)),
-        });
-        let client = RemoteClient::new(ctx.clone(), &info.cas_url, &auth, id, false, None);
+        let cas = cas_token::connect(ctx, url, branch, Operation::Download, credential, id).await?;
         let config = TranslatorConfig::new(
             ctx,
             SessionContext {
-                endpoint: info.cas_url,
-                auth,
+                endpoint: cas.endpoint,
+                auth: cas.auth,
                 custom_headers: None,
                 repo_paths: vec![],
                 session_id: Some(id.to_owned()),
                 cache_root: None,
             },
         )?;
-        Ok((client, config))
+        Ok((cas.client, config))
     }
 
     async fn create_state(&self) -> Result<Arc<CleanSessionState>> {
         // The repository handle isn't Sync, so it is dropped before the first await.
-        let (worktree, base, scratch, remote) = {
+        let (worktree, staging, scratch, remote, staging_lock) = {
             let repo = GitRepo::open_from_cur_dir()?;
             let worktree = repo
                 .worktree_dir()?
@@ -139,16 +113,24 @@ impl CleanSession {
                     )
                 },
             }
-            let base = repo.common_dir()?.join("xet").join("staging");
-            std::fs::create_dir_all(&base)?;
-            let scratch = tempfile::Builder::new().prefix("session-").tempdir_in(&base)?;
+            let staging = staging_dir(&repo)?;
+            let staging_lock = lock_shared(&staging)?;
+            if staging_lock.is_none() {
+                eprintln!(
+                    "{GIT_HF_PROGRAM}: {} does not support file locks; continuing without one, so pushes will \
+                     leave uploaded data staged. To free space, delete that directory once every commit is \
+                     pushed, no worktree has staged changes, and no `git add` is running.",
+                    staging.display()
+                );
+            }
+            let scratch = tempfile::Builder::new().prefix("session-").tempdir_in(&staging)?;
             // Resolved outside the time budget below, which cannot interrupt blocking calls. Lookups
             // never prompt and bound themselves: 2 s for a credential helper, a connect timeout for SSH.
             let remote = repo.remote_url().ok().and_then(|url| {
                 let credential = resolve_credential(&repo, &url, Operation::Download, Interaction::Never).ok()?;
                 Some((url, repo.branch_name().ok()?, credential.helper()))
             });
-            (worktree, base, scratch, remote)
+            (worktree, staging, scratch, remote, staging_lock)
         };
         let id = scratch.path().file_name().unwrap().to_string_lossy().into_owned();
         let remote = match remote {
@@ -166,8 +148,8 @@ impl CleanSession {
             None => (None, TranslatorConfig::memory_config(&self.ctx, scratch.path())?),
         };
         config.shard_session_directory = scratch.path().join("session");
-        let client = StagingClient::new(self.ctx.clone(), &base, remote)?;
-        let dedup = StagedDedupSource::new(&self.ctx, &base.join("shards")).await?;
+        let client = StagingClient::new(self.ctx.clone(), &staging, remote)?;
+        let dedup = StagedDedupSource::new(&self.ctx, &staging.join("shards")).await?;
         let session = FileUploadSession::new_with_client(
             Arc::new(config),
             client,
@@ -180,8 +162,9 @@ impl CleanSession {
             dedup,
             files: Mutex::new(Vec::new()),
             _scratch: scratch,
-            staging: base,
+            staging,
             worktree,
+            _staging_lock: staging_lock,
         }))
     }
 
@@ -203,7 +186,7 @@ impl CleanSession {
 
     /// Cleans `data` as one request for `file`, blocking until done.
     #[cfg(test)]
-    fn clean(&self, data: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn clean(&self, data: &[u8]) -> Result<Vec<u8>> {
         use crate::filter_protocol::{Content, flush_packet, write_data};
 
         self.ctx.runtime.handle().block_on(async {
@@ -223,7 +206,7 @@ impl CleanSession {
 
     /// Finalizes, blocking until done.
     #[cfg(test)]
-    fn finish_blocking(self) -> Result<()> {
+    pub(crate) fn finish_blocking(self) -> Result<()> {
         let runtime = self.ctx.runtime.clone();
         runtime.bridge_sync(self.finish())?
     }
@@ -360,7 +343,8 @@ mod tests {
         third.finish_blocking()?;
         fs::remove_file(root.join("xorbs"))?;
         fs::rename(root.join("saved-xorbs"), root.join("xorbs"))?;
-        assert_eq!(fs::read_dir(root)?.count(), 2);
+        // Only `shards`, `xorbs`, and the lock file remain; session directories are removed.
+        assert_eq!(fs::read_dir(root)?.count(), 3);
         Ok(())
     }
 
@@ -453,7 +437,8 @@ mod tests {
         data[1] = 17;
         second.clean(&data)?;
         second.finish_blocking()?;
-        assert_eq!(fs::read_dir(&root)?.count(), 2);
+        // Only `shards`, `xorbs`, and the lock file remain; session directories are removed.
+        assert_eq!(fs::read_dir(&root)?.count(), 3);
         assert_eq!(fs::read_dir(root.join("xorbs"))?.count(), 2);
         Ok(())
     }
