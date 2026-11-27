@@ -242,6 +242,23 @@ class TestUploadStream:
         assert raised  # exception must propagate
         assert stream.try_finish() is None  # abort() ran, not finish()
 
+    def test_commit_after_aborted_stream_keeps_retry(self, endpoint):
+        # A stream aborted by an exception in its with-block is left out of the commit,
+        # so the file can be retried with a new stream in the same commit.
+        commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)
+        try:
+            with commit.start_upload_stream(name="retry.bin") as failed:
+                failed.write(b"partial")
+                raise ValueError("source failed")
+        except ValueError:
+            pass
+        with commit.start_upload_stream(name="retry.bin") as retry:
+            retry.write(b"complete")
+
+        report = commit.wait_to_finish()
+        assert list(report.uploads) == [retry.task_id()]
+        assert report.progress.total_bytes_completed == report.progress.total_bytes == len(b"complete")
+
     def test_context_manager_idempotent_when_finish_called_inside(self, endpoint):
         # Calling finish() explicitly inside the with-block must not cause a double-finish error.
         commit = hf_xet.XetSession().new_upload_commit(endpoint=endpoint)

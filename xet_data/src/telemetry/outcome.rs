@@ -101,6 +101,7 @@ pub fn error_class(error: &DataError) -> &'static str {
         DataError::JoinError(_) => "internal",
         DataError::InternalError(_) | DataError::SyncError(_) | DataError::InvalidOperation(_) => "internal",
         DataError::ClientError(e) => client_error_class(e),
+        DataError::Shared(e) => error_class(e),
         _ => "other",
     }
 }

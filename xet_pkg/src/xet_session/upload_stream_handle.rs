@@ -30,7 +30,7 @@ pub(super) struct XetStreamUploadInner {
 }
 
 impl XetStreamUploadInner {
-    async fn write(self: &Arc<Self>, data: Bytes) -> Result<(), XetError> {
+    async fn write(&self, data: Bytes) -> Result<(), XetError> {
         let mut guard = self.cleaner.lock().await;
         let Some((cleaner, _)) = guard.as_mut() else {
             return Err(XetError::other("stream already finished"));
@@ -45,7 +45,7 @@ impl XetStreamUploadInner {
         };
         drop(guard);
 
-        match cleaner.finish().await {
+        match cleaner.finish_or_abort().await {
             Ok((xet_info, dedup_metrics)) => Ok(XetFileMetadata {
                 task_id: self.task_id,
                 xet_info,
@@ -65,9 +65,14 @@ impl XetStreamUploadInner {
     }
 
     fn abort(&self) {
-        let _ = self.task_runtime.cancel_subtree();
-        if let Ok(mut cleaner_guard) = self.cleaner.try_lock() {
-            *cleaner_guard = None;
+        let _ = self.task_runtime.cancel_unless_finalizing();
+    }
+
+    /// Aborts the cleaner of a cancelled stream so the upload session stops tracking its file.
+    pub(super) async fn abort_cleaner(&self) {
+        let cleaner = self.cleaner.lock().await.take();
+        if let Some((cleaner, _)) = cleaner {
+            cleaner.abort().await;
         }
     }
 }
@@ -79,7 +84,8 @@ impl XetStreamUploadInner {
 /// Returned by [`XetUploadCommit::upload_stream`].  Feed data with
 /// [`write`](Self::write), then call [`finish`](Self::finish) to finalise
 /// ingestion.  **`finish` must be called before [`XetUploadCommit::commit`]**;
-/// committing with an unfinished stream handle is an error.
+/// committing with an unfinished stream handle is an error, unless the stream
+/// was given up with [`abort`](Self::abort).
 ///
 /// This type is cheaply clonable; all clones share the same underlying state.
 #[derive(Clone)]
@@ -181,9 +187,10 @@ impl XetStreamUpload {
 
     /// Cancel the streaming upload.
     ///
-    /// Drops the internal data pipeline.  Subsequent [`write`](Self::write) or
-    /// [`finish`](Self::finish) calls may return [`XetError::UserCancelled`] or
-    /// related errors.
+    /// Works on a running stream or one whose `write`/`finish` failed; once `finish`
+    /// has started or succeeded, it is a no-op. A cancelled stream rejects further
+    /// writes and is left out of [`XetUploadCommit::commit`], so a failed file can be
+    /// retried with a new stream in the same commit.
     pub fn abort(&self) {
         info!(task_id = %self.task_id(), "Stream abort");
         self.inner.abort()

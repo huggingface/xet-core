@@ -137,6 +137,19 @@ impl TaskRuntime {
         self.set_state_recursive(XetTaskState::UserCancelled)
     }
 
+    /// Cancels this task unless it is finalizing, completed, or already cancelled, and returns
+    /// whether it did. Shares the state lock with `transition_to_finalizing`, so only one of the two
+    /// wins. Descendant tokens are cancelled, but only this task's state changes.
+    pub(super) fn cancel_unless_finalizing(&self) -> Result<bool, XetError> {
+        let mut state = self.state.lock()?;
+        if !matches!(*state, XetTaskState::Running | XetTaskState::Error(_)) {
+            return Ok(false);
+        }
+        *state = XetTaskState::UserCancelled;
+        self.cancellation_token.cancel();
+        Ok(true)
+    }
+
     pub(super) fn cancellation_token(&self) -> CancellationToken {
         self.cancellation_token.clone()
     }
@@ -151,11 +164,18 @@ impl TaskRuntime {
         }
     }
 
+    /// Records a failed operation. A task already cancelled stays cancelled: an error that lands
+    /// after a concurrent abort must not undo it.
     fn update_state_on_error(&self, err: &XetError) -> Result<(), XetError> {
-        match err {
-            XetError::UserCancelled(_) => self.set_state(XetTaskState::UserCancelled),
-            other => self.set_state(XetTaskState::Error(other.to_string())),
+        let mut state = self.state.lock()?;
+        if matches!(*state, XetTaskState::UserCancelled) {
+            return Ok(());
         }
+        *state = match err {
+            XetError::UserCancelled(_) => XetTaskState::UserCancelled,
+            other => XetTaskState::Error(other.to_string()),
+        };
+        Ok(())
     }
 
     // ── Background task helpers ──────────────────────────────────────────────
@@ -406,6 +426,39 @@ impl TaskRuntime {
                 )),
                 result = fut => result,
             }
+        }
+    }
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tests {
+    use super::*;
+    use crate::xet_session::XetSessionBuilder;
+
+    #[test]
+    fn test_cancel_unless_finalizing_cancels_only_running_or_failed_tasks() {
+        let session = XetSessionBuilder::new().build().unwrap();
+
+        // A task that started finalizing or completed is left alone.
+        for state in [XetTaskState::Finalizing, XetTaskState::Completed] {
+            let task = session.inner.task_runtime.child().unwrap();
+            task.set_state(state.clone()).unwrap();
+            assert!(!task.cancel_unless_finalizing().unwrap());
+            assert_eq!(task.status().unwrap(), state);
+            assert!(!task.cancellation_token().is_cancelled());
+        }
+
+        // A running or failed task is cancelled once; an error that lands afterwards does not undo
+        // the cancellation, and the task can no longer start finalizing.
+        for state in [XetTaskState::Running, XetTaskState::Error("failure".into())] {
+            let task = session.inner.task_runtime.child().unwrap();
+            task.set_state(state).unwrap();
+            assert!(task.cancel_unless_finalizing().unwrap());
+            assert!(!task.cancel_unless_finalizing().unwrap());
+            task.update_state_on_error(&XetError::other("late write error")).unwrap();
+            assert_eq!(task.status().unwrap(), XetTaskState::UserCancelled);
+            assert!(task.cancellation_token().is_cancelled());
+            assert!(matches!(task.transition_to_finalizing("test_finish", false), Err(XetError::UserCancelled(_))));
         }
     }
 }

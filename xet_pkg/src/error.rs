@@ -245,6 +245,7 @@ impl XetError {
             DataError::HashStringParsingFailure(_) => XetError::DataIntegrity(de.to_string()),
             DataError::InvalidOperation(_) => XetError::Configuration(de.to_string()),
             DataError::FileReconstructionError(fre) => XetError::from_file_reconstruction_error_ref(fre),
+            DataError::Shared(inner) => XetError::from_data_error_ref(inner),
             _ => XetError::Internal(de.to_string()),
         }
     }
@@ -430,6 +431,13 @@ mod tests {
     #[test]
     fn client_auth_maps_to_authentication() {
         let err = XetError::from(ClientError::AuthError(AuthError::TokenRefreshFailure("bad token".to_string())));
+        assert!(matches!(err, XetError::Authentication(_)));
+    }
+
+    #[test]
+    fn shared_data_error_maps_like_its_inner_error() {
+        let inner = DataError::ClientError(ClientError::AuthError(AuthError::TokenRefreshFailure("bad".to_string())));
+        let err = XetError::from(DataError::Shared(std::sync::Arc::new(inner)));
         assert!(matches!(err, XetError::Authentication(_)));
     }
 

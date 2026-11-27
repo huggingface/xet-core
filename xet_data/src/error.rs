@@ -1,4 +1,5 @@
 use std::string::FromUtf8Error;
+use std::sync::Arc;
 use std::sync::mpsc::RecvError;
 
 use thiserror::Error;
@@ -90,6 +91,11 @@ pub enum DataError {
 
     #[error("Runtime error: {0}")]
     RuntimeError(#[from] RuntimeError),
+
+    /// One failure reported to several callers, e.g. a session-wide upload failure returned both
+    /// to the file that hit it and to finalize. Classify it by the inner error.
+    #[error(transparent)]
+    Shared(Arc<DataError>),
 }
 
 pub type Result<T> = std::result::Result<T, DataError>;
