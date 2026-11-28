@@ -203,7 +203,7 @@ async fn test_download_emits_one_terminal_document() {
 
     let download = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
     let out = env.base_dir.join("out.bin");
-    download.download_file(&xfi, &out).await.unwrap();
+    download.download_file(&xfi, &out, false).await.unwrap();
     download.finalize().await.unwrap();
 
     assert_eq!(std::fs::read(&out).unwrap(), data);
@@ -223,9 +223,49 @@ async fn test_download_emits_one_terminal_document() {
     assert_eq!(metrics["terminal"], true);
     assert_eq!(metrics["n_files"], 1);
     assert!(metrics.get("expansion_ratio").is_some(), "download-only key missing");
+    assert_eq!(metrics["resumed_file_count"], 0);
+    assert_eq!(metrics["resume_fallback_count"], 0);
     // Upload-only keys must not appear on a download document.
     assert!(metrics.get("dedup_ratio").is_none());
     assert!(metrics.get("ingest_ms").is_none());
+}
+
+/// Resumed downloads, and those re-downloaded after failing verification, are counted per transfer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_download_reports_resumed_and_fallback_files() {
+    let env = TestEnvironment::new().await;
+
+    let data: Vec<u8> = (0..128 * 1024).map(|i| (i % 251) as u8).collect();
+    let upload = FileUploadSession::new(env.config.clone()).await.unwrap();
+    let xfi = upload_bytes(&upload, "f.bin", &data).await;
+    upload.finalize().await.unwrap();
+
+    let fresh = env.base_dir.join("fresh.bin");
+    let resumed = env.base_dir.join("resumed.bin");
+    std::fs::write(&resumed, &data[..1000]).unwrap();
+    let corrupt = env.base_dir.join("corrupt.bin");
+    std::fs::write(&corrupt, vec![0xFF; 1000]).unwrap();
+
+    let download = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
+    for path in [&fresh, &resumed, &corrupt] {
+        download.download_file(&xfi, path, true).await.unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), data);
+    }
+    download.finalize().await.unwrap();
+
+    let docs = env.telemetry_docs();
+    let doc = docs
+        .iter()
+        .find(|d| d["event"] == "xet_download_summary")
+        .expect("no download document");
+    let metrics = &doc["metrics"];
+    assert_eq!(metrics["outcome"], "ok");
+    assert_eq!(metrics["n_files"], 3);
+    // `fresh.bin` did not exist, so it is a fresh download even though `resume` was set.
+    assert_eq!(metrics["resumed_file_count"], 2);
+    assert_eq!(metrics["resume_fallback_count"], 1);
+    // The fallback's abandoned attempt is withdrawn, so each file counts once.
+    assert_eq!(metrics["total_bytes"], 3 * data.len() as u64 - 1000);
 }
 
 /// Upload and download in the same session share a `session_id` but must be distinguishable.
@@ -239,7 +279,7 @@ async fn test_transfer_id_separates_directions() {
     upload.finalize().await.unwrap();
 
     let download = FileDownloadSession::new(env.config.clone(), None).await.unwrap();
-    download.download_file(&xfi, &env.base_dir.join("o.bin")).await.unwrap();
+    download.download_file(&xfi, &env.base_dir.join("o.bin"), false).await.unwrap();
     download.finalize().await.unwrap();
 
     let docs = env.telemetry_docs();

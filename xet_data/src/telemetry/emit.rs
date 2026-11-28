@@ -102,7 +102,7 @@ fn download_metrics(
             progress,
         },
     );
-    to_value(DownloadMetrics::new(common))
+    to_value(DownloadMetrics::new(common, progress))
 }
 
 /// Serializes, falling back to an empty object rather than panicking.
@@ -255,7 +255,7 @@ pub(crate) fn start_download_heartbeat(
                 progress: &progress,
             },
         );
-        Some(to_value(DownloadMetrics::new(common)))
+        Some(to_value(DownloadMetrics::new(common, &progress)))
     });
 }
 

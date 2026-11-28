@@ -111,8 +111,8 @@ pub async fn clean_file(
 /// - Check if a file needs to be uploaded (by comparing hashes)
 /// - Generate cache keys for local file operations
 #[cfg(not(target_family = "wasm"))]
-fn hash_single_file(ctx: XetContext, filename: String, buffer_size: usize) -> Result<XetFileInfo> {
-    let mut reader = File::open(&filename)?;
+pub(crate) fn hash_single_file(ctx: XetContext, filename: impl AsRef<Path>, buffer_size: usize) -> Result<XetFileInfo> {
+    let mut reader = File::open(filename)?;
     let filesize = reader.metadata()?.len();
 
     let mut buffer = vec![0u8; buffer_size];
@@ -291,7 +291,7 @@ mod tests {
 
         let buffer_size = 8 * 1024 * 1024; // 8MB
         let ctx = XetContext::default().unwrap();
-        let result = hash_single_file(ctx, file_path.to_str().unwrap().to_string(), buffer_size);
+        let result = hash_single_file(ctx, &file_path, buffer_size);
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
@@ -308,7 +308,7 @@ mod tests {
 
         let buffer_size = 8 * 1024 * 1024; // 8MB
         let ctx = XetContext::default().unwrap();
-        let result = hash_single_file(ctx, file_path.to_str().unwrap().to_string(), buffer_size);
+        let result = hash_single_file(ctx, &file_path, buffer_size);
         assert!(result.is_ok());
 
         let file_info = result.unwrap();
@@ -351,7 +351,7 @@ mod tests {
     async fn test_hash_file_not_found() {
         let buffer_size = 8 * 1024 * 1024; // 8MB
         let ctx = XetContext::default().unwrap();
-        let result = hash_single_file(ctx, "/nonexistent/file.txt".to_string(), buffer_size);
+        let result = hash_single_file(ctx, "/nonexistent/file.txt", buffer_size);
         assert!(result.is_err());
     }
 
