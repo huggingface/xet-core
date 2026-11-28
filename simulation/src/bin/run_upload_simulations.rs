@@ -174,7 +174,7 @@ fn main() -> Result<()> {
         server_latency_profiles
     };
 
-    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+    let timestamp = jiff::Timestamp::now().strftime("%Y%m%d_%H%M%S").to_string();
     let results_base = PathBuf::from(&args.out_dir).join(&timestamp);
     std::fs::create_dir_all(&results_base)?;
 

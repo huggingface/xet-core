@@ -55,12 +55,12 @@ impl PythonConfigValue for std::time::Duration {
     }
 
     fn from_python(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
-        // Accept a human-readable string like "500ms", "1s", "2m30s" (parsed by humantime),
+        // Accept a human-readable string like "500ms", "1s", "2m30s" (see `parse_duration`),
         // or a Python datetime.timedelta (PyO3's native Duration extraction).
         if let Ok(s) = obj.extract::<String>() {
-            humantime::parse_duration(&s).map_err(|e| {
+            crate::utils::configuration_utils::parse_duration(&s).map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!(
-                    "Invalid duration string {s:?}: {e}. Expected a humantime string like \"500ms\", \"1s\", or \"2m30s\"."
+                    "{e}. Expected a duration string like \"500ms\", \"1s\", or \"2m30s\"."
                 ))
             })
         } else {

@@ -127,9 +127,9 @@ async fn run_added_uploads(mut scenario: SimulationScenario, duration_sec: u64) 
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
-/// Parses a duration string (humantime crate: e.g. "10ms", "1s").
+/// Parses a duration string (e.g. "10ms", "1s"; see `xet_runtime::utils::configuration_utils::parse_duration`).
 fn parse_duration(s: &str) -> ScenarioResult<Duration> {
-    humantime::parse_duration(s).map_err(|e| ScenarioError::Scenario(format!("invalid duration {:?}: {}", s, e)))
+    xet_runtime::utils::configuration_utils::parse_duration(s).map_err(ScenarioError::Scenario)
 }
 
 fn setup_logging(out_dir: &Path) {

@@ -52,7 +52,6 @@ bitflags = { version = "2.10", features = ["serde"] }
 blake3 = "1.8"
 bytemuck = "1"
 bytes = "1.11"
-chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 colored = "3"
 console-subscriber = "0.5"
@@ -64,7 +63,6 @@ csv = "1"
 ctor = "1"
 dirs = "6.0"
 futures = "0.3"
-humantime = "2.1"
 futures-util = "0.3"
 gearhash = "0.1"
 getrandom = { version = "0.4", features = ["wasm_js"] }
@@ -78,6 +76,9 @@ human-bandwidth = "0.1"
 hyper = "1.12"
 hyper-util = "0.1"
 itertools = "0.14"
+# Time zone support (system zone, bundled tzdb on Windows) is turned on per crate, on native
+# targets only, so wasm builds do not embed a time zone database.
+jiff = { version = "0.2", default-features = false, features = ["std"] }
 konst = "0.4"
 libc = "0.2"
 lz4_flex = "0.13"
